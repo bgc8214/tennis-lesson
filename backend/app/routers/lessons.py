@@ -1,0 +1,565 @@
+"""레슨 리소스 라우터 (POST/GET/DELETE).
+
+엔드포인트:
+  - POST   /api/v1/lessons/analyze
+  - GET    /api/v1/lessons
+  - GET    /api/v1/lessons/{lesson_id}
+  - DELETE /api/v1/lessons/{lesson_id}
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date as date_cls
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    status,
+)
+
+from app.auth import get_current_user_id
+from app.config import get_settings
+from app.database import get_supabase_client
+from app.models.lesson import (
+    LessonAnalyzeRequest,
+)
+from app.services import gemini_service, stt_service, youtube_service
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/lessons", tags=["lessons"])
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 직렬화 헬퍼
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _err(code: str, message: str, *, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"code": code, "message": message}
+    if details is not None:
+        body["details"] = details
+    return {"error": body}
+
+
+def _serialize_lesson_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "lesson_id": row.get("id"),
+        "youtube_url": row.get("youtube_url"),
+        "youtube_video_id": row.get("youtube_video_id"),
+        "title": row.get("title"),
+        "lesson_date": row.get("lesson_date"),
+        "thumbnail_url": row.get("thumbnail_url"),
+        "duration_sec": row.get("duration_sec"),
+        "lesson_type": row.get("lesson_type") or [],
+        "processing_status": row.get("processing_status") or "PENDING",
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _serialize_report(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    return {
+        "card1_problem": row.get("card1_problem"),
+        "card2_cueing": row.get("card2_cueing"),
+        "card3_action": row.get("card3_action"),
+        "keywords": row.get("keywords") or [],
+        "timestamps": row.get("timestamps") or [],
+        "full_summary": row.get("full_summary"),
+        "transcript_source": row.get("transcript_source") or "UNKNOWN",
+        "gemini_model": row.get("gemini_model"),
+        "error_message": row.get("error_message"),
+        "completed_at": row.get("completed_at"),
+        "progress_step": row.get("progress_step") or 0,
+        "progress_message": row.get("progress_message"),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 진행 상태 헬퍼
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _update_progress(sb, lesson_id: str, step: int, message: str, now_fn) -> None:
+    """PROCESSING 중 진행 단계/메시지를 lesson_reports에 기록."""
+    try:
+        sb.table("lesson_reports").update(
+            {
+                "progress_step": step,
+                "progress_message": message,
+                "updated_at": now_fn(),
+            }
+        ).eq("lesson_id", lesson_id).execute()
+    except Exception as e:
+        logger.warning("[%s] progress update failed: %s", lesson_id, e)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 백그라운드 분석 작업
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
+    """비동기 BackgroundTask로 실행되는 전체 파이프라인.
+
+    상태 전이:
+      PENDING → PROCESSING → (DONE | FAILED)
+    """
+    sb = get_supabase_client()
+    settings = get_settings()
+    now = lambda: datetime.now(timezone.utc).isoformat()
+
+    # 1) lesson 상태 PROCESSING으로
+    try:
+        sb.table("lessons").update(
+            {"updated_at": now()}
+        ).eq("id", lesson_id).execute()
+        sb.table("lesson_reports").update(
+            {"processing_status": "PROCESSING", "updated_at": now()}
+        ).eq("lesson_id", lesson_id).execute()
+    except Exception as e:
+        logger.warning("[%s] failed to mark PROCESSING: %s", lesson_id, e)
+
+    # PROCESSING 직후: 1단계 진행 메시지
+    _update_progress(sb, lesson_id, 0, "🎵 오디오 다운로드 중... (1/3)", now)
+
+    transcript_source = "UNKNOWN"
+
+    try:
+        report = gemini_service.generate_lesson_report(
+            youtube_url,
+            on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
+        )
+    except Exception as e:
+        logger.error("[%s] gemini failed: %s", lesson_id, e)
+        try:
+            sb.table("lesson_reports").update(
+                {
+                    "processing_status": "FAILED",
+                    "transcript_source": transcript_source,
+                    "error_message": f"Gemini 분석 실패: {e}",
+                    "progress_message": None,
+                    "progress_step": 0,
+                    "updated_at": now(),
+                    "completed_at": now(),
+                }
+            ).eq("lesson_id", lesson_id).execute()
+        except Exception as e2:
+            logger.error("[%s] failed to write FAILED state: %s", lesson_id, e2)
+        return
+
+    # 5) 정상 완료 저장
+    try:
+        sb.table("lesson_reports").update(
+            {
+                "card1_problem": report.get("card1_problem"),
+                "card2_cueing": report.get("card2_cueing"),
+                "card3_action": report.get("card3_action"),
+                "full_summary": report.get("full_summary"),
+                "keywords": report.get("keywords") or [],
+                "timestamps": report.get("timestamps") or [],
+                "transcript_source": transcript_source,
+                "gemini_model": report.get("gemini_model") or settings.GEMINI_MODEL,
+                "processing_status": "DONE",
+                "error_message": None,
+                "progress_message": None,
+                "progress_step": 4,
+                "updated_at": now(),
+                "completed_at": now(),
+            }
+        ).eq("lesson_id", lesson_id).execute()
+
+        # lesson 메타가 비어있다면 보강 (제목 자동 채움) + 카테고리 업데이트
+        try:
+            video_id = youtube_service.extract_video_id(youtube_url)
+            meta = youtube_service.get_video_metadata(video_id)
+            patch: Dict[str, Any] = {"updated_at": now()}
+            if meta.get("title"):
+                patch["title"] = meta["title"]
+            if meta.get("duration_sec"):
+                patch["duration_sec"] = meta["duration_sec"]
+            if meta.get("thumbnail_url"):
+                patch["thumbnail_url"] = meta["thumbnail_url"]
+            # lesson_type은 메타데이터 조회 성공 여부와 무관하게 갱신
+            patch["lesson_type"] = report.get("lesson_type") or []
+            sb.table("lessons").update(patch).eq("id", lesson_id).execute()
+        except Exception as e:
+            logger.info("[%s] metadata fill skipped: %s", lesson_id, e)
+            # 메타 보강은 실패해도 lesson_type만이라도 별도로 저장 시도
+            try:
+                sb.table("lessons").update(
+                    {
+                        "lesson_type": report.get("lesson_type") or [],
+                        "updated_at": now(),
+                    }
+                ).eq("id", lesson_id).execute()
+            except Exception as e2:
+                logger.warning("[%s] lesson_type update failed: %s", lesson_id, e2)
+
+    except Exception as e:
+        logger.error("[%s] failed to save DONE state: %s", lesson_id, e)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Endpoints
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.post("/analyze", status_code=status.HTTP_202_ACCEPTED)
+def analyze_lesson(
+    payload: LessonAnalyzeRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """YouTube URL을 받아 분석 작업을 큐잉한다. 즉시 202 + lesson_id 반환."""
+    settings = get_settings()
+    sb = get_supabase_client()
+
+    youtube_url = str(payload.youtube_url)
+
+    # 1) video_id 추출 검증
+    try:
+        video_id = youtube_service.extract_video_id(youtube_url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_err("INVALID_YOUTUBE_URL", "YouTube URL을 해석할 수 없습니다.",
+                       details={"youtube_url": youtube_url, "reason": str(e)}),
+        )
+
+    # 2) 메타데이터 (실패해도 진행, 폴백 썸네일)
+    title: Optional[str] = payload.title
+    duration_sec: Optional[int] = None
+    thumbnail_url: Optional[str] = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    upload_date: Optional[str] = None
+    try:
+        meta = youtube_service.get_video_metadata(video_id)
+        if not title:
+            title = meta.get("title")
+        duration_sec = meta.get("duration_sec")
+        thumbnail_url = meta.get("thumbnail_url") or thumbnail_url
+        upload_date = meta.get("upload_date")
+    except Exception as e:
+        logger.info("metadata lookup skipped: %s", e)
+
+    # 3) 영상 길이 가드
+    if (
+        duration_sec is not None
+        and settings.YTDLP_MAX_DURATION_SEC > 0
+        and duration_sec > settings.YTDLP_MAX_DURATION_SEC
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_err(
+                "VIDEO_TOO_LONG",
+                "영상 길이가 한도를 초과합니다.",
+                details={"duration_sec": duration_sec, "limit": settings.YTDLP_MAX_DURATION_SEC},
+            ),
+        )
+
+    # 4) 동일 user + video_id 중복 차단
+    try:
+        existing = (
+            sb.table("lessons")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("youtube_video_id", video_id)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            existing_id = existing.data[0]["id"]
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_err(
+                    "LESSON_ALREADY_EXISTS",
+                    "이미 분석된 레슨이 있습니다.",
+                    details={
+                        "existing_lesson_id": existing_id,
+                        "youtube_video_id": video_id,
+                    },
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("duplicate check failed (skipping): %s", e)
+
+    # 5) lessons + lesson_reports 레코드 생성
+    lesson_date_str = (
+        payload.lesson_date.isoformat()
+        if isinstance(payload.lesson_date, date_cls)
+        else upload_date  # 사용자가 지정 안 했으면 YouTube 업로드 날짜 사용
+    )
+    lesson_insert = {
+        "user_id": user_id,
+        "youtube_url": youtube_url,
+        "youtube_video_id": video_id,
+        "title": title,
+        "lesson_date": lesson_date_str,
+        "thumbnail_url": thumbnail_url,
+        "duration_sec": duration_sec,
+    }
+
+    try:
+        ins = sb.table("lessons").insert(lesson_insert).execute()
+    except Exception as e:
+        logger.exception("lesson insert failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 저장에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    if not ins.data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_err("INTERNAL_ERROR", "레슨 생성 응답이 비어 있습니다."),
+        )
+
+    lesson_row = ins.data[0]
+    lesson_id = lesson_row["id"]
+
+    # report shell 레코드 (PENDING)
+    try:
+        sb.table("lesson_reports").insert(
+            {
+                "lesson_id": lesson_id,
+                "processing_status": "PENDING",
+                "transcript_source": "UNKNOWN",
+                "keywords": [],
+                "timestamps": [],
+            }
+        ).execute()
+    except Exception as e:
+        logger.warning("report shell insert failed: %s", e)
+
+    # 6) 백그라운드 분석 트리거
+    background_tasks.add_task(_run_analysis_pipeline, lesson_id, youtube_url)
+
+    return {
+        "data": {
+            "lesson_id": lesson_id,
+            "processing_status": "PENDING",
+            "youtube_video_id": video_id,
+            "created_at": lesson_row.get("created_at"),
+        }
+    }
+
+
+@router.get("")
+def list_lessons(
+    limit: int = Query(default=20, ge=1, le=50),
+    cursor: Optional[str] = Query(default=None),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    lesson_type: Optional[str] = Query(
+        default=None,
+        description="레슨 카테고리 필터 (예: 포핸드, 백핸드, 발리, 서브, 로브, 스텝, 풋워크, 게임레슨, 드롭샷, 어프로치)",
+    ),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """내 레슨 목록 (created_at desc, cursor 기반 페이지네이션).
+
+    lesson_type 파라미터가 주어지면 해당 카테고리를 포함한 레슨만 반환.
+    """
+    sb = get_supabase_client()
+
+    try:
+        q = (
+            sb.table("lessons")
+            .select(
+                "id, youtube_url, youtube_video_id, title, lesson_date, "
+                "thumbnail_url, duration_sec, lesson_type, created_at, updated_at, "
+                "lesson_reports(processing_status)"
+            )
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(limit + 1)  # has_more 판정용
+        )
+        if cursor:
+            q = q.lt("created_at", cursor)
+        if lesson_type:
+            # PostgreSQL 배열 contains: lesson_type @> ARRAY['포핸드']
+            q = q.contains("lesson_type", [lesson_type])
+        res = q.execute()
+    except Exception as e:
+        logger.exception("list_lessons query failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 조회에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    rows: List[Dict[str, Any]] = list(res.data or [])
+
+    # 상태 필터 (Python-side; 단순함을 위해)
+    def _row_status(r: Dict[str, Any]) -> str:
+        rep = r.get("lesson_reports")
+        if isinstance(rep, list) and rep:
+            rep = rep[0]
+        if isinstance(rep, dict):
+            return rep.get("processing_status") or "PENDING"
+        return "PENDING"
+
+    if status_filter:
+        rows = [r for r in rows if _row_status(r) == status_filter]
+
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    next_cursor: Optional[str] = None
+    if has_more and rows:
+        next_cursor = rows[-1].get("created_at")
+
+    data = []
+    for r in rows:
+        summary = _serialize_lesson_summary(r)
+        summary["processing_status"] = _row_status(r)
+        data.append(summary)
+
+    return {
+        "data": data,
+        "pagination": {
+            "limit": limit,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        },
+    }
+
+
+@router.get("/{lesson_id}")
+def get_lesson(
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """레슨 상세 + 리포트."""
+    sb = get_supabase_client()
+
+    try:
+        res = (
+            sb.table("lessons")
+            .select(
+                "id, user_id, youtube_url, youtube_video_id, title, lesson_date, "
+                "thumbnail_url, duration_sec, lesson_type, created_at, updated_at, "
+                "lesson_reports(*)"
+            )
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("get_lesson query failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 조회에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    if not res.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err(
+                "LESSON_NOT_FOUND",
+                "해당 레슨을 찾을 수 없습니다.",
+                details={"lesson_id": lesson_id},
+            ),
+        )
+
+    row = res.data[0]
+    if row.get("user_id") != user_id:
+        # 본인 소유 아님 → 404로 노출 (정보 누설 최소화)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err(
+                "LESSON_NOT_FOUND",
+                "해당 레슨을 찾을 수 없습니다.",
+                details={"lesson_id": lesson_id},
+            ),
+        )
+
+    rep = row.get("lesson_reports")
+    if isinstance(rep, list):
+        rep = rep[0] if rep else None
+
+    proc_status = (rep or {}).get("processing_status") or "PENDING"
+
+    summary = _serialize_lesson_summary(row)
+    summary["processing_status"] = proc_status
+
+    if proc_status in ("DONE", "FAILED"):
+        summary["report"] = _serialize_report(rep)
+    elif proc_status in ("PENDING", "PROCESSING") and rep:
+        # PROCESSING 중에는 progress 정보만 반환
+        summary["report"] = {
+            "progress_step": (rep or {}).get("progress_step") or 0,
+            "progress_message": (rep or {}).get("progress_message"),
+            # 나머지 카드 필드는 None
+            "card1_problem": None,
+            "card2_cueing": None,
+            "card3_action": None,
+            "keywords": [],
+            "timestamps": [],
+            "full_summary": None,
+            "error_message": None,
+            "transcript_source": None,
+            "gemini_model": None,
+            "completed_at": None,
+        }
+    else:
+        summary["report"] = None
+
+    return {"data": summary}
+
+
+@router.delete("/{lesson_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lesson(
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    user_id: str = Depends(get_current_user_id),
+) -> Response:
+    """레슨 + 리포트 영구 삭제 (lesson_reports는 ON DELETE CASCADE)."""
+    sb = get_supabase_client()
+
+    # 소유권 확인
+    try:
+        res = (
+            sb.table("lessons")
+            .select("id, user_id")
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("delete pre-check failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 조회에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    if not res.data or res.data[0].get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err(
+                "LESSON_NOT_FOUND",
+                "해당 레슨을 찾을 수 없습니다.",
+                details={"lesson_id": lesson_id},
+            ),
+        )
+
+    try:
+        sb.table("lessons").delete().eq("id", lesson_id).execute()
+    except Exception as e:
+        logger.exception("lesson delete failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 삭제에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
