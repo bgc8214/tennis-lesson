@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     GEMINI_TEMPERATURE: float = 0.4
 
     # === Whisper ===
-    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_MODEL_SIZE: str = "medium"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_LANGUAGE: str = "ko"
 
