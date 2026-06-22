@@ -9,21 +9,28 @@ import { getLessons } from "@/lib/api";
 import { ApiCallError, type LessonSummary } from "@/types/lesson";
 import { useAnalysisTracker } from "@/lib/AnalysisTracker";
 
+const PAGE_SIZE = 12;
+
 export default function HomePage() {
   const [lessons, setLessons] = useState<LessonSummary[]>([]);
   const [isLoadingList, setIsLoadingList] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
 
   const loadLessons = useCallback(async () => {
     setIsLoadingList(true);
     setListError(null);
     try {
       const res = await getLessons({
-        limit: 12,
+        limit: PAGE_SIZE,
         lesson_type: selectedType ?? undefined,
       });
       setLessons(res.data);
+      setNextCursor(res.pagination.next_cursor);
+      setHasMore(res.pagination.has_more);
     } catch (err) {
       if (err instanceof ApiCallError && err.status === 401) {
         setLessons([]);
@@ -36,6 +43,25 @@ export default function HomePage() {
       setIsLoadingList(false);
     }
   }, [selectedType]);
+
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const res = await getLessons({
+        limit: PAGE_SIZE,
+        cursor: nextCursor,
+        lesson_type: selectedType ?? undefined,
+      });
+      setLessons((prev) => [...prev, ...res.data]);
+      setNextCursor(res.pagination.next_cursor);
+      setHasMore(res.pagination.has_more);
+    } catch {
+      // 더보기 실패는 조용히 무시
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [nextCursor, isLoadingMore, selectedType]);
 
   useEffect(() => {
     loadLessons();
@@ -108,15 +134,29 @@ export default function HomePage() {
         ) : lessons.length === 0 ? (
           <EmptyState />
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {lessons.map((lesson) => (
-              <LessonCard
-                key={lesson.lesson_id}
-                lesson={lesson}
-                onDeleted={handleDeleted}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {lessons.map((lesson) => (
+                <LessonCard
+                  key={lesson.lesson_id}
+                  lesson={lesson}
+                  onDeleted={handleDeleted}
+                />
+              ))}
+            </div>
+            {hasMore && (
+              <div className="mt-6 text-center">
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  disabled={isLoadingMore}
+                  className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-6 py-2.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {isLoadingMore ? "불러오는 중..." : "더 보기"}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </section>
 

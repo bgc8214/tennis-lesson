@@ -48,6 +48,8 @@ MERGE_PROMPT_TEMPLATE = (
     '"full_summary": "레슨 전체 흐름 요약 3~5문단", '
     '"keywords": ["키워드1", "키워드2", "키워드3"], '
     '"lesson_type": ["포핸드"], '
+    '"steps": ["① 첫 번째 실행 단계", "② 두 번째 실행 단계", "③ 세 번째 실행 단계"], '
+    '"scenarios": [{{"condition": "볼이 높게 왔을 때", "action": "앞에서 파워로 마무리"}}, {{"condition": "볼이 낮게 왔을 때", "action": "드롭 후 드라이브로 넘겨준다"}}], '
     '"timestamps": [{{"sec": 0, "category": "포핸드", "label": "문제 요약", "quote": "코치 발언 원문", "fix": "교정 방법"}}]}}\n\n'
     '규칙:\n'
     '1) 모든 문자열은 한국어.\n'
@@ -60,7 +62,9 @@ MERGE_PROMPT_TEMPLATE = (
     '4) lesson_type은 다음 값들 중 해당하는 것을 모두 포함한 배열: '
     '["포핸드", "백핸드", "발리", "서브", "로브", "스텝", "풋워크", "게임레슨", "드롭샷", "어프로치"]. '
     '레슨 내용/피드백 키워드를 근거로 1~3개를 선택. 분류 불가하면 빈 배열 [].\n'
-    '5) 순수 JSON만 출력. 마크다운 펜스 금지.'
+    '5) steps: 코치가 알려준 기술 동작을 ①②③... 순서로 3~6개 배열. 없으면 빈 배열 [].\n'
+    '6) scenarios: 코치가 언급한 상황별 대처법. condition(상황 조건)과 action(대응 행동) 쌍으로 1~4개. 없으면 빈 배열 [].\n'
+    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 ALLOWED_LESSON_TYPES = {
@@ -142,6 +146,26 @@ def _coerce_lesson_type(value: Any) -> List[str]:
         if s in ALLOWED_LESSON_TYPES and s not in out:
             out.append(s)
     return out[:3]  # 과도한 라벨링 방지
+
+
+def _coerce_steps(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(i).strip() for i in value if str(i).strip()][:6]
+
+
+def _coerce_scenarios(value: Any) -> List[Dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        condition = str(item.get("condition", "")).strip()
+        action = str(item.get("action", "")).strip()
+        if condition and action:
+            out.append({"condition": condition, "action": action})
+    return out[:4]
 
 
 def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
@@ -395,6 +419,8 @@ def generate_lesson_report(
                 "full_summary": None,
                 "keywords": r.get("keywords", []),
                 "lesson_type": r.get("lesson_type", []),
+                "steps": r.get("steps", []),
+                "scenarios": r.get("scenarios", []),
                 "timestamps": [{"sec": fb["sec"], "category": fb.get("category",""), "label": fb.get("problem",""), "quote": fb.get("quote",""), "fix": fb.get("fix","")} for fb in feedbacks],
             }
         else:
@@ -410,6 +436,8 @@ def generate_lesson_report(
         "full_summary":  str(parsed.get("full_summary")  or "").strip() or None,
         "keywords":      _coerce_keywords(parsed.get("keywords")),
         "lesson_type":   _coerce_lesson_type(parsed.get("lesson_type")),
+        "steps":         _coerce_steps(parsed.get("steps")),
+        "scenarios":     _coerce_scenarios(parsed.get("scenarios")),
         "timestamps":    _coerce_timestamps(parsed.get("timestamps")),
         "gemini_model":  settings.GEMINI_MODEL,
     }
