@@ -1,39 +1,59 @@
+"use client";
+
+import { useState } from "react";
 import type { LessonDetail } from "@/types/lesson";
 import { VideoPlayer } from "./VideoPlayer";
 import { NoteCards } from "./NoteCards";
 import { ShareButtons } from "./ShareButtons";
+import { CourtDiagram } from "./CourtDiagram";
 
 interface ReportViewProps {
   lesson: LessonDetail;
   startSec?: number;
 }
 
-/**
- * 레슨 리포트 좌우 2단 레이아웃 컨테이너.
- * - 모바일: 세로로 비디오 → 카드
- * - 데스크톱(lg+): 좌측 비디오(스티키) + 우측 카드
- */
 export function ReportView({ lesson, startSec }: ReportViewProps) {
   const { report } = lesson;
   const title = lesson.title?.trim() || "레슨 오답노트";
 
+  const [requestedSec, setRequestedSec] = useState<number | undefined>(
+    startSec && startSec > 0 ? startSec : undefined,
+  );
+  const [courtSelectedIndex, setCourtSelectedIndex] = useState<number | null>(null);
+
+  const handleSeek = (sec: number) => setRequestedSec(sec);
+
+  const showCourt = report && (
+    report.court_analysis_status === "PROCESSING" ||
+    report.court_analysis_status === "FAILED" ||
+    (report.court_analysis_status === "DONE" && report.court_tactics)
+  );
+
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-8">
-      {/* 좌측: 비디오 + 타임스탬프 */}
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:gap-8">
+      {/* 좌측: 비디오만 sticky */}
       <div className="lg:sticky lg:top-24 lg:self-start">
         <VideoPlayer
           youtubeUrl={lesson.youtube_url}
           youtubeVideoId={lesson.youtube_video_id}
-          timestamps={report?.timestamps ?? []}
           startSec={startSec}
+          requestedSec={requestedSec}
         />
       </div>
 
-      {/* 우측: 3단 카드 + 공유 */}
+      {/* 우측: 3단 카드 + 코트 전술(피드백 목록 통합) + 공유 */}
       <div className="space-y-4">
         {report ? (
           <>
             <NoteCards report={report} />
+            <CourtDiagram
+              tactics={report.court_tactics ?? []}
+              timestamps={report.timestamps ?? []}
+              courtAnalysisStatus={report.court_analysis_status}
+              onSeek={handleSeek}
+              selectedIndex={courtSelectedIndex}
+              onSelectIndex={setCourtSelectedIndex}
+            />
             <ShareButtons report={report} lessonTitle={title} />
           </>
         ) : (
@@ -46,4 +66,4 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
   );
 }
 
-export { VideoPlayer, NoteCards, ShareButtons };
+export { VideoPlayer, NoteCards, ShareButtons, CourtDiagram };

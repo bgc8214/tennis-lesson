@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     ANALYZE_TIMEOUT_SEC: int = 600
     TRANSCRIPT_PREFERRED_LANGUAGES: str = "ko,ko-KR,en"
 
+    # === Court Analysis (Phase 2) ===
+    COURT_ANALYSIS_ENABLED: bool = False  # 기본값 False (점진적 롤아웃)
+    COURT_ANALYSIS_MAX_CLIPS: int = 10
+    COURT_ANALYSIS_CLIP_DURATION: int = 40
+    COURT_ANALYSIS_VIDEO_HEIGHT: int = 480
+    COURT_ANALYSIS_YOLO_CONF: float = 0.5
+    COURT_ANALYSIS_FPS_SAMPLE: int = 2
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

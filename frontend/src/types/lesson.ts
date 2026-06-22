@@ -10,6 +10,34 @@ export type TranscriptSource =
   | "WHISPER_STT"
   | "UNKNOWN";
 
+export type CourtPosition =
+  | "net_left"
+  | "net_center"
+  | "net_right"
+  | "service_line_left"
+  | "service_line_center"
+  | "service_line_right"
+  | "baseline_left"
+  | "baseline_center"
+  | "baseline_right"
+  | "unknown";
+
+export type CourtAnalysisStatus = "PROCESSING" | "DONE" | "FAILED" | null;
+
+export interface CourtTactic {
+  sec: number;
+  position: CourtPosition;
+  position_x: number;
+  position_y: number;
+  to_position?: string | null;
+  to_position_x?: number | null;
+  to_position_y?: number | null;
+  category: string | null;
+  tactic: string;
+  label: string;
+  quote?: string | null;
+}
+
 export type ApiErrorCode =
   | "INVALID_YOUTUBE_URL"
   | "VALIDATION_ERROR"
@@ -72,6 +100,8 @@ export interface LessonReport {
   completed_at?: string | null;
   progress_step?: number;
   progress_message?: string | null;
+  court_tactics?: CourtTactic[] | null;
+  court_analysis_status?: CourtAnalysisStatus;
 }
 
 export interface LessonSummary {

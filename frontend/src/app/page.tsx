@@ -17,7 +17,7 @@ export default function HomePage() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
 
   const loadLessons = useCallback(async () => {
@@ -29,7 +29,7 @@ export default function HomePage() {
         lesson_type: selectedType ?? undefined,
       });
       setLessons(res.data);
-      setNextCursor(res.pagination.next_cursor);
+      setNextOffset(res.pagination.has_more ? PAGE_SIZE : null);
       setHasMore(res.pagination.has_more);
     } catch (err) {
       if (err instanceof ApiCallError && err.status === 401) {
@@ -45,23 +45,23 @@ export default function HomePage() {
   }, [selectedType]);
 
   const loadMore = useCallback(async () => {
-    if (!nextCursor || isLoadingMore) return;
+    if (nextOffset === null || isLoadingMore) return;
     setIsLoadingMore(true);
     try {
       const res = await getLessons({
         limit: PAGE_SIZE,
-        cursor: nextCursor,
+        offset: nextOffset,
         lesson_type: selectedType ?? undefined,
       });
       setLessons((prev) => [...prev, ...res.data]);
-      setNextCursor(res.pagination.next_cursor);
+      setNextOffset(res.pagination.has_more ? nextOffset + PAGE_SIZE : null);
       setHasMore(res.pagination.has_more);
     } catch {
       // 더보기 실패는 조용히 무시
     } finally {
       setIsLoadingMore(false);
     }
-  }, [nextCursor, isLoadingMore, selectedType]);
+  }, [nextOffset, isLoadingMore, selectedType]);
 
   useEffect(() => {
     loadLessons();
