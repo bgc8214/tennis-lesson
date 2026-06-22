@@ -111,20 +111,20 @@ function rowToSummary(row: Record<string, unknown>): LessonSummary {
 /** GET lessons — Supabase 직접 쿼리 */
 export async function getLessons(params: {
   limit?: number;
-  cursor?: string;
+  offset?: number;
   lesson_type?: string;
 } = {}): Promise<PaginatedResponse<LessonSummary>> {
   const supabase = getSupabaseClient();
   const limit = params.limit ?? 20;
+  const offset = params.offset ?? 0;
 
   let q = supabase
     .from("lessons")
     .select("id, youtube_url, youtube_video_id, title, lesson_date, thumbnail_url, duration_sec, lesson_type, created_at, updated_at, lesson_reports(processing_status)")
     .order("lesson_date", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
-    .limit(limit + 1);
+    .range(offset, offset + limit);  // limit+1개 가져와서 has_more 판정
 
-  if (params.cursor) q = q.lt("created_at", params.cursor);
   if (params.lesson_type) q = q.contains("lesson_type", [params.lesson_type]);
 
   const { data, error } = await q;
@@ -136,11 +136,10 @@ export async function getLessons(params: {
   const rows = (data ?? []) as Record<string, unknown>[];
   const hasMore = rows.length > limit;
   const sliced = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? (sliced[sliced.length - 1]?.created_at as string) : null;
 
   return {
     data: sliced.map(rowToSummary),
-    pagination: { limit, next_cursor: nextCursor, has_more: hasMore },
+    pagination: { limit, next_cursor: hasMore ? String(offset + limit) : null, has_more: hasMore },
   };
 }
 
@@ -180,6 +179,8 @@ export async function getLesson(id: string): Promise<LessonDetail> {
           completed_at: (rep.completed_at as string | null) ?? null,
           progress_step: (rep.progress_step as number) ?? 0,
           progress_message: (rep.progress_message as string | null) ?? null,
+          court_tactics: (rep.court_tactics as import("@/types/lesson").CourtTactic[] | null) ?? null,
+          court_analysis_status: (rep.court_analysis_status as import("@/types/lesson").CourtAnalysisStatus | null) ?? null,
         }
       : null,
   };

@@ -272,7 +272,11 @@ def _analyze_chunk(client: Any, chunk: Dict, types: Any) -> Optional[Dict]:
                 types.Part(file_data=types.FileData(file_uri=uploaded.uri, mime_type="audio/mpeg")),
                 types.Part(text=CHUNK_PROMPT),
             ],
-            config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=16000),
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=16000,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
         )
         raw = response.text or ""
         logger.info("청크 응답 (offset=%ds, 길이=%d): %s", offset, len(raw), raw[:200])
@@ -320,7 +324,11 @@ def _merge_chunks(client: Any, chunk_results: List[Dict], types: Any) -> dict:
     response = client.models.generate_content(
         model=get_settings().GEMINI_MODEL,
         contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.4, max_output_tokens=8192),
+        config=types.GenerateContentConfig(
+            temperature=0.4,
+            max_output_tokens=8192,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
     return _parse_json(response.text or "")
 

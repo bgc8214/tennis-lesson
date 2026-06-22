@@ -1,13 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LessonTimestamp } from "@/types/lesson";
+import { useEffect, useRef, useState } from "react";
 
 interface VideoPlayerProps {
   youtubeUrl: string;
   youtubeVideoId: string;
-  timestamps: LessonTimestamp[];
   startSec?: number;
+  requestedSec?: number;
 }
 
 interface YTPlayer {
@@ -63,36 +62,23 @@ function loadYouTubeIframeAPI(): Promise<YTNamespace> {
   return apiLoadingPromise;
 }
 
-function formatTime(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
 export function VideoPlayer({
   youtubeUrl,
   youtubeVideoId,
-  timestamps,
   startSec = 0,
+  requestedSec,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
   const [isReady, setIsReady] = useState(false);
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
-
-  const sortedTimestamps = useMemo(
-    () => [...timestamps].sort((a, b) => a.sec - b.sec),
-    [timestamps],
-  );
 
   useEffect(() => {
     let cancelled = false;
-    let player: YTPlayer | null = null;
 
     loadYouTubeIframeAPI()
       .then((YT) => {
         if (cancelled || !containerRef.current) return;
-        player = new YT.Player(containerRef.current, {
+        const player = new YT.Player(containerRef.current, {
           videoId: youtubeVideoId,
           playerVars: {
             playsinline: 1,
@@ -127,31 +113,26 @@ export function VideoPlayer({
     };
   }, [youtubeVideoId]);
 
-  const seekTo = useCallback(
-    (sec: number, idx: number) => {
-      setActiveIndex(idx);
-      const player = playerRef.current;
-      if (player && isReady) {
-        player.seekTo(sec, true);
-        player.playVideo();
-      } else {
-        // 폴백: 새 탭으로 시간 지정 링크
-        const url = `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.floor(sec)}s`;
-        window.open(url, "_blank", "noopener,noreferrer");
-      }
-    },
-    [isReady, youtubeVideoId],
-  );
-
-  const severityClass = (ts: LessonTimestamp): string => {
-    if (ts.severity === "critical") {
-      return "border-l-4 border-red-500 bg-red-50/40";
+  // requestedSec가 변경되면 플레이어를 해당 초로 이동
+  useEffect(() => {
+    if (requestedSec === undefined) return;
+    const player = playerRef.current;
+    if (player && isReady) {
+      // Gemini 타임스탬프는 피드백 발화 시점 기준이라 실제 장면보다 살짝 늦음
+      // 5초 앞으로 이동해서 해당 장면을 먼저 볼 수 있게
+      const adjustedSec = Math.max(0, requestedSec - 5);
+      player.seekTo(adjustedSec, true);
+      player.playVideo();
+    } else if (requestedSec !== undefined) {
+      // 폴백: 새 탭으로 시간 지정 링크
+      const adjustedSec = Math.max(0, requestedSec - 5);
+      const url = `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.floor(adjustedSec)}s`;
+      window.open(url, "_blank", "noopener,noreferrer");
     }
-    return "border-l-4 border-yellow-400 bg-yellow-50/40";
-  };
+  }, [requestedSec, isReady, youtubeVideoId]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 플레이어 */}
       <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-sm">
         <div className="aspect-video w-full">
@@ -190,54 +171,6 @@ export function VideoPlayer({
           />
         </svg>
       </a>
-
-      {/* 타임스탬프 목록 */}
-      {sortedTimestamps.length > 0 && (
-        <div>
-          <h3 className="mb-2 text-sm font-semibold text-gray-900">
-            주요 장면 ({sortedTimestamps.length})
-          </h3>
-          <ul className="space-y-1.5">
-            {sortedTimestamps.map((ts, i) => {
-              const active = activeIndex === i;
-              return (
-                <li key={`${ts.sec}-${i}`}>
-                  <button
-                    type="button"
-                    onClick={() => seekTo(ts.sec, i)}
-                    className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${severityClass(ts)} ${active ? "ring-2 ring-brand-400" : ""}`}
-                  >
-                    <span className="mt-0.5 inline-flex min-w-[44px] justify-center rounded bg-gray-900/90 px-1.5 py-0.5 font-mono text-xs font-semibold text-white shrink-0">
-                      {formatTime(ts.sec)}
-                    </span>
-                    <span className="flex-1 min-w-0 text-gray-800">
-                      <span className="flex items-center gap-1.5 flex-wrap">
-                        {ts.category && (
-                          <span className="inline-block rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-700">
-                            {ts.category}
-                          </span>
-                        )}
-                        <span className="font-medium">{ts.label}</span>
-                      </span>
-                      {ts.quote && (
-                        <span className="mt-1 block text-xs italic text-gray-500">
-                          &ldquo;{ts.quote}&rdquo;
-                        </span>
-                      )}
-                      {ts.fix && (
-                        <span className="mt-1 flex items-start gap-1 text-xs text-brand-700">
-                          <span className="shrink-0">→</span>
-                          <span>{ts.fix}</span>
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }

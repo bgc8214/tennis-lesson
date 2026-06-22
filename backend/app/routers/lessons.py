@@ -32,6 +32,7 @@ from app.models.lesson import (
     LessonAnalyzeRequest,
 )
 from app.services import gemini_service, stt_service, youtube_service
+from app.services import court_service
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ def _serialize_report(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]
         "completed_at": row.get("completed_at"),
         "progress_step": row.get("progress_step") or 0,
         "progress_message": row.get("progress_message"),
+        # Phase 2: Court Tactics
+        "court_tactics": row.get("court_tactics"),
+        "court_analysis_status": row.get("court_analysis_status"),
     }
 
 
@@ -212,6 +216,85 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
 
     except Exception as e:
         logger.error("[%s] failed to save DONE state: %s", lesson_id, e)
+        return
+
+    # Phase 2: Court Tactics Analysis (선택적, 별도 에러 핸들링)
+    if get_settings().COURT_ANALYSIS_ENABLED and report.get("timestamps"):
+        try:
+            sb.table("lesson_reports").update(
+                {"court_analysis_status": "PROCESSING", "updated_at": now()}
+            ).eq("lesson_id", lesson_id).execute()
+
+            court_tactics = court_service.analyze_court_tactics(
+                youtube_url,
+                report["timestamps"],
+                on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
+            )
+            sb.table("lesson_reports").update(
+                {"court_tactics": court_tactics, "court_analysis_status": "DONE", "updated_at": now()}
+            ).eq("lesson_id", lesson_id).execute()
+            logger.info("[%s] court analysis done: %d tactics", lesson_id, len(court_tactics))
+        except Exception as e:
+            logger.warning("[%s] court analysis failed: %s", lesson_id, e)
+            try:
+                sb.table("lesson_reports").update(
+                    {"court_analysis_status": "FAILED", "updated_at": now()}
+                ).eq("lesson_id", lesson_id).execute()
+            except Exception as e2:
+                logger.warning("[%s] court status update failed: %s", lesson_id, e2)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Background court analysis task (separate trigger)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _run_court_analysis(lesson_id: str, youtube_url: str) -> None:
+    """Background task for standalone court analysis trigger."""
+    sb = get_supabase_client()
+    now = lambda: datetime.now(timezone.utc).isoformat()
+
+    try:
+        sb.table("lesson_reports").update(
+            {"court_analysis_status": "PROCESSING", "updated_at": now()}
+        ).eq("lesson_id", lesson_id).execute()
+    except Exception as e:
+        logger.warning("[%s] court: failed to mark PROCESSING: %s", lesson_id, e)
+
+    try:
+        # Fetch timestamps from existing report
+        report_res = (
+            sb.table("lesson_reports")
+            .select("timestamps")
+            .eq("lesson_id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+        timestamps = []
+        if report_res.data:
+            timestamps = report_res.data[0].get("timestamps") or []
+
+        if not timestamps:
+            logger.info("[%s] court: no timestamps, marking DONE with empty", lesson_id)
+            sb.table("lesson_reports").update(
+                {"court_tactics": [], "court_analysis_status": "DONE", "updated_at": now()}
+            ).eq("lesson_id", lesson_id).execute()
+            return
+
+        court_tactics = court_service.analyze_court_tactics(youtube_url, timestamps)
+        sb.table("lesson_reports").update(
+            {"court_tactics": court_tactics, "court_analysis_status": "DONE", "updated_at": now()}
+        ).eq("lesson_id", lesson_id).execute()
+        logger.info("[%s] court analysis done: %d tactics", lesson_id, len(court_tactics))
+
+    except Exception as e:
+        logger.error("[%s] court analysis failed: %s", lesson_id, e)
+        try:
+            sb.table("lesson_reports").update(
+                {"court_analysis_status": "FAILED", "updated_at": now()}
+            ).eq("lesson_id", lesson_id).execute()
+        except Exception as e2:
+            logger.warning("[%s] court status update failed: %s", lesson_id, e2)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -516,6 +599,9 @@ def get_lesson(
             "transcript_source": None,
             "gemini_model": None,
             "completed_at": None,
+            # Phase 2: Court Tactics
+            "court_tactics": None,
+            "court_analysis_status": None,
         }
     else:
         summary["report"] = None
@@ -567,3 +653,119 @@ def delete_lesson(
         )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{lesson_id}/court-analysis", status_code=status.HTTP_202_ACCEPTED)
+def trigger_court_analysis(
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """코트 전술 분석을 별도로 트리거한다.
+
+    이미 Phase 1이 DONE인 레슨에 대해서만 실행 가능.
+    """
+    settings = get_settings()
+
+    # Feature flag check
+    if not settings.COURT_ANALYSIS_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_err("FEATURE_DISABLED", "코트 분석 기능이 비활성화되어 있습니다."),
+        )
+
+    sb = get_supabase_client()
+
+    # Fetch lesson + report
+    try:
+        res = (
+            sb.table("lessons")
+            .select(
+                "id, user_id, youtube_url, "
+                "lesson_reports(processing_status, court_analysis_status)"
+            )
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("court-analysis pre-check failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 조회에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    # 404: not found or not owned
+    if not res.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err(
+                "LESSON_NOT_FOUND",
+                "해당 레슨을 찾을 수 없습니다.",
+                details={"lesson_id": lesson_id},
+            ),
+        )
+
+    row = res.data[0]
+    if row.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err(
+                "LESSON_NOT_FOUND",
+                "해당 레슨을 찾을 수 없습니다.",
+                details={"lesson_id": lesson_id},
+            ),
+        )
+
+    # Extract report info
+    rep = row.get("lesson_reports")
+    if isinstance(rep, list):
+        rep = rep[0] if rep else None
+
+    if not rep:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_err(
+                "LESSON_NOT_READY",
+                "레슨 분석이 완료된 후에만 코트 분석을 실행할 수 있습니다.",
+                details={"lesson_id": lesson_id, "current_status": "PENDING"},
+            ),
+        )
+
+    proc_status = rep.get("processing_status") or "PENDING"
+    court_status = rep.get("court_analysis_status")
+
+    # 400: Phase 1 not done
+    if proc_status != "DONE":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_err(
+                "LESSON_NOT_READY",
+                "레슨 분석이 완료된 후에만 코트 분석을 실행할 수 있습니다.",
+                details={"lesson_id": lesson_id, "current_status": proc_status},
+            ),
+        )
+
+    # 409: already processing
+    if court_status == "PROCESSING":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_err(
+                "COURT_ANALYSIS_IN_PROGRESS",
+                "코트 분석이 이미 진행 중입니다.",
+                details={"lesson_id": lesson_id, "court_analysis_status": "PROCESSING"},
+            ),
+        )
+
+    youtube_url = row.get("youtube_url", "")
+
+    # Trigger background task
+    background_tasks.add_task(_run_court_analysis, lesson_id, youtube_url)
+
+    return {
+        "data": {
+            "lesson_id": lesson_id,
+            "court_analysis_status": "PROCESSING",
+            "message": "코트 분석이 시작되었습니다.",
+        }
+    }
