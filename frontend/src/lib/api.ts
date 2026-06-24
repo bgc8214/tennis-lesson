@@ -125,6 +125,7 @@ export async function getLessons(params: {
     .order("created_at", { ascending: false })
     .range(offset, offset + limit);  // limit+1개 가져와서 has_more 판정
 
+  q = q.eq("is_hidden", false);
   if (params.lesson_type) q = q.contains("lesson_type", [params.lesson_type]);
 
   const { data, error } = await q;
@@ -154,7 +155,7 @@ export async function getLesson(id: string): Promise<LessonDetail> {
     .limit(1)
     .single();
 
-  if (error || !data) {
+  if (error || !data || (data as Record<string, unknown>).is_hidden === true) {
     throw new ApiCallError("해당 레슨을 찾을 수 없습니다.", { status: 404, code: "LESSON_NOT_FOUND" });
   }
 
@@ -179,6 +180,7 @@ export async function getLesson(id: string): Promise<LessonDetail> {
           completed_at: (rep.completed_at as string | null) ?? null,
           progress_step: (rep.progress_step as number) ?? 0,
           progress_message: (rep.progress_message as string | null) ?? null,
+          transcript_text: (rep.transcript_text as string | null) ?? null,
           court_tactics: (rep.court_tactics as import("@/types/lesson").CourtTactic[] | null) ?? null,
           court_analysis_status: (rep.court_analysis_status as import("@/types/lesson").CourtAnalysisStatus | null) ?? null,
         }
