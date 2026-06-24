@@ -142,10 +142,18 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
     transcript_source = "UNKNOWN"
 
     try:
-        report = gemini_service.generate_lesson_report(
-            youtube_url,
-            on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
-        )
+        engine = settings.TRANSCRIPT_ENGINE
+        if engine == "whisper":
+            logger.info("[%s] TRANSCRIPT_ENGINE=whisper 경로 사용", lesson_id)
+            report = gemini_service.generate_lesson_report_whisper(
+                youtube_url,
+                on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
+            )
+        else:
+            report = gemini_service.generate_lesson_report(
+                youtube_url,
+                on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
+            )
     except Exception as e:
         logger.error("[%s] gemini failed: %s", lesson_id, e)
         try:
@@ -176,6 +184,7 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
                 "steps": report.get("steps") or [],
                 "scenarios": report.get("scenarios") or [],
                 "timestamps": report.get("timestamps") or [],
+                "transcript_text": report.get("transcript_text"),
                 "transcript_source": transcript_source,
                 "gemini_model": report.get("gemini_model") or settings.GEMINI_MODEL,
                 "processing_status": "DONE",
@@ -218,8 +227,24 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
         logger.error("[%s] failed to save DONE state: %s", lesson_id, e)
         return
 
-    # Phase 2: Court Tactics Analysis (선택적, 별도 에러 핸들링)
-    if get_settings().COURT_ANALYSIS_ENABLED and report.get("timestamps"):
+    # Phase 2: Transcript + Court Tactics 병렬 실행
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run_transcript() -> None:
+        transcript = report.get("transcript_text")
+        if not transcript:
+            return
+        try:
+            sb.table("lesson_reports").update(
+                {"transcript_text": transcript, "updated_at": now()}
+            ).eq("lesson_id", lesson_id).execute()
+            logger.info("[%s] transcript saved", lesson_id)
+        except Exception as e:
+            logger.warning("[%s] transcript save failed: %s", lesson_id, e)
+
+    def _run_court() -> None:
+        if not (get_settings().COURT_ANALYSIS_ENABLED and report.get("timestamps")):
+            return
         try:
             sb.table("lesson_reports").update(
                 {"court_analysis_status": "PROCESSING", "updated_at": now()}
@@ -240,8 +265,16 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
                 sb.table("lesson_reports").update(
                     {"court_analysis_status": "FAILED", "updated_at": now()}
                 ).eq("lesson_id", lesson_id).execute()
-            except Exception as e2:
-                logger.warning("[%s] court status update failed: %s", lesson_id, e2)
+            except Exception:
+                pass
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(_run_transcript), executor.submit(_run_court)]
+        for f in futures:
+            try:
+                f.result()
+            except Exception as e:
+                logger.warning("[%s] post-processing error: %s", lesson_id, e)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -469,6 +502,7 @@ def list_lessons(
                 "lesson_reports(processing_status)"
             )
             .eq("user_id", user_id)
+            .eq("is_hidden", False)
             .order("created_at", desc=True)
             .limit(limit + 1)  # has_more 판정용
         )
@@ -561,6 +595,11 @@ def get_lesson(
         )
 
     row = res.data[0]
+    if row.get("is_hidden"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err("LESSON_NOT_FOUND", "해당 레슨을 찾을 수 없습니다.", details={"lesson_id": lesson_id}),
+        )
     if row.get("user_id") != user_id:
         # 본인 소유 아님 → 404로 노출 (정보 누설 최소화)
         raise HTTPException(
@@ -607,6 +646,57 @@ def get_lesson(
         summary["report"] = None
 
     return {"data": summary}
+
+
+@router.post("/{lesson_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+def retry_lesson(
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """실패한 레슨 분석을 재시도한다."""
+    sb = get_supabase_client()
+
+    try:
+        res = (
+            sb.table("lessons")
+            .select("id, user_id, youtube_url, lesson_reports(processing_status)")
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=_err("UPSTREAM_ERROR", "조회 실패", details={"reason": str(e)}))
+
+    if not res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=_err("LESSON_NOT_FOUND", "해당 레슨을 찾을 수 없습니다."))
+
+    row = res.data[0]
+    if row.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=_err("LESSON_NOT_FOUND", "해당 레슨을 찾을 수 없습니다."))
+
+    rep = row.get("lesson_reports")
+    if isinstance(rep, list):
+        rep = rep[0] if rep else {}
+    if (rep or {}).get("processing_status") not in ("FAILED", "DONE"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=_err("LESSON_NOT_FAILED", "실패 상태인 레슨만 재시도할 수 있습니다."))
+
+    now = lambda: datetime.now(timezone.utc).isoformat()
+    sb.table("lesson_reports").update({
+        "processing_status": "PENDING",
+        "error_message": None,
+        "progress_step": 0,
+        "progress_message": None,
+        "updated_at": now(),
+    }).eq("lesson_id", lesson_id).execute()
+
+    background_tasks.add_task(_run_analysis_pipeline, lesson_id, row["youtube_url"])
+
+    return {"data": {"lesson_id": lesson_id, "processing_status": "PENDING"}}
 
 
 @router.delete("/{lesson_id}", status_code=status.HTTP_204_NO_CONTENT)

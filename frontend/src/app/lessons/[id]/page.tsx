@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ReportView } from "@/components/ReportView";
@@ -389,9 +389,28 @@ function ProcessingPlaceholder({
 }
 
 function FailedPlaceholder({ lesson }: { lesson: LessonDetail }) {
+  const [retrying, setRetrying] = React.useState(false);
+  const router = useRouter();
+
   const message =
     lesson.report?.error_message ??
     "레슨 분석에 실패했습니다. 자막이 없거나 영상이 너무 길 수 있어요.";
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/lessons/${lesson.lesson_id}/retry`,
+        { method: "POST" }
+      );
+      if (res.ok) {
+        router.refresh();
+      }
+    } catch {
+      setRetrying(false);
+    }
+  };
+
   return (
     <div className="rounded-3xl border-2 border-red-200 bg-red-50 p-8 text-center sm:p-12">
       <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-red-100 text-red-600">
@@ -411,12 +430,22 @@ function FailedPlaceholder({ lesson }: { lesson: LessonDetail }) {
       </div>
       <h2 className="text-lg font-bold text-red-700 sm:text-xl">분석 실패</h2>
       <p className="mx-auto mt-2 max-w-md text-sm text-red-700/80">{message}</p>
-      <Link
-        href="/"
-        className="mt-5 inline-flex items-center justify-center rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
-      >
-        다른 영상으로 시도하기
-      </Link>
+      <div className="mt-5 flex items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={handleRetry}
+          disabled={retrying}
+          className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+        >
+          {retrying ? "재시도 중..." : "다시 분석하기"}
+        </button>
+        <Link
+          href="/"
+          className="inline-flex items-center justify-center rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+        >
+          대시보드로
+        </Link>
+      </div>
     </div>
   );
 }
