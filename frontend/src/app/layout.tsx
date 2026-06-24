@@ -10,12 +10,18 @@ export const metadata: Metadata = {
   description:
     "유튜브 레슨 영상을 1분 만에 오답노트로. AI가 코치님의 피드백을 분석해 고질병 / 코치 큐잉 / 액션 플랜 3장으로 정리합니다.",
   metadataBase: new URL(
-    process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
+    process.env.NEXT_PUBLIC_SITE_URL ?? "https://tennis-lesson.vercel.app",
   ),
   openGraph: {
     title: "오늘의 테니스 — AI 레슨 복기",
     description: "레슨의 망각을 데이터의 자산으로.",
     type: "website",
+    siteName: "오늘의 테니스",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "오늘의 테니스 — AI 레슨 복기",
+    description: "레슨의 망각을 데이터의 자산으로.",
   },
 };
 

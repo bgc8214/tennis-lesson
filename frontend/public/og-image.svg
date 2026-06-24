@@ -1,0 +1,53 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1a2e1a"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 배경 -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- 그린 글로우 원 -->
+  <circle cx="900" cy="150" r="400" fill="url(#glow)"/>
+
+  <!-- 테니스 코트 라인 (장식) -->
+  <rect x="60" y="60" width="1080" height="510" rx="8" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0.2"/>
+  <line x1="600" y1="60" x2="600" y2="570" stroke="#22c55e" stroke-width="1" opacity="0.1"/>
+  <line x1="60" y1="315" x2="1140" y2="315" stroke="#22c55e" stroke-width="1.5" opacity="0.15"/>
+  <rect x="200" y="60" width="800" height="255" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.08"/>
+
+  <!-- 로고 아이콘 -->
+  <rect x="100" y="220" width="56" height="56" rx="14" fill="#22c55e"/>
+  <path d="M128 234a10 10 0 1 0 10 10A10 10 0 0 0 128 234Zm0 18a8 8 0 0 1-7.43-5h2.06a6 6 0 0 0 10.74 0h2.06A8 8 0 0 1 128 252Zm-7.43-9a8 8 0 0 1 14.86 0h-2.06a6 6 0 0 0-10.74 0Z" fill="white"/>
+
+  <!-- 서비스명 -->
+  <text x="174" y="258" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="42" font-weight="800" fill="white" letter-spacing="-1">오늘의 테니스</text>
+
+  <!-- 구분선 -->
+  <rect x="100" y="300" width="120" height="3" rx="2" fill="#22c55e"/>
+
+  <!-- 슬로건 -->
+  <text x="100" y="355" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="26" fill="#86efac" font-weight="500">레슨의 망각을 데이터의 자산으로</text>
+
+  <!-- 설명 -->
+  <text x="100" y="410" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="20" fill="#94a3b8">AI가 코치님의 피드백을 분석해 오답노트로 정리합니다</text>
+
+  <!-- 태그 뱃지들 -->
+  <rect x="100" y="450" width="130" height="36" rx="18" fill="#22c55e" fill-opacity="0.15" stroke="#22c55e" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="165" y="473" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" fill="#22c55e" text-anchor="middle">고질병 분석</text>
+
+  <rect x="248" y="450" width="130" height="36" rx="18" fill="#22c55e" fill-opacity="0.15" stroke="#22c55e" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="313" y="473" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" fill="#22c55e" text-anchor="middle">코치 큐잉</text>
+
+  <rect x="396" y="450" width="130" height="36" rx="18" fill="#22c55e" fill-opacity="0.15" stroke="#22c55e" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="461" y="473" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" fill="#22c55e" text-anchor="middle">액션 플랜</text>
+
+  <!-- URL -->
+  <text x="1100" y="570" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16" fill="#4ade80" text-anchor="end" opacity="0.7">tennis-lesson.vercel.app</text>
+</svg>
