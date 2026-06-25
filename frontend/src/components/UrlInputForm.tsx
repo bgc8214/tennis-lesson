@@ -25,6 +25,7 @@ interface UrlInputFormProps {
 
 export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
   const [url, setUrl] = useState("");
+  const [analyzeCourt, setAnalyzeCourt] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [messageIndex, setMessageIndex] = useState(0);
   const router = useRouter();
@@ -130,7 +131,7 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
     setIsLoading(true);
     setMessageIndex(0);
     try {
-      const res = await analyzeLesson({ youtube_url: trimmed });
+      const res = await analyzeLesson({ youtube_url: trimmed, analyze_court: analyzeCourt });
       setIsLoading(false);
 
       if (res.processing_status === "DONE") {
@@ -188,6 +189,20 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
             <span>복기하기</span>
           )}
         </button>
+      </div>
+
+      <div className="mt-3 flex items-center justify-center gap-2">
+        <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-500">
+          <input
+            type="checkbox"
+            checked={analyzeCourt}
+            onChange={(e) => setAnalyzeCourt(e.target.checked)}
+            disabled={isLoading}
+            className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500"
+          />
+          <span>코트 전술 다이어그램 분석 포함</span>
+          <span className="text-xs text-gray-400">(+5~7분)</span>
+        </label>
       </div>
 
       {isLoading && (

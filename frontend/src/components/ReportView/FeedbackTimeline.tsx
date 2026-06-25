@@ -9,6 +9,7 @@ import type { CourtTactic, LessonTimestamp } from "@/types/lesson";
 
 export interface FeedbackItem {
   sec: number;
+  type?: "교정" | "드릴" | "전술";
   category: string | null;
   position?: string | null;
   tactic?: string | null;
@@ -58,6 +59,12 @@ function formatTime(sec: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function getTypeBadgeClass(type: string | null | undefined): string {
+  if (type === "드릴") return "bg-amber-100 text-amber-700";
+  if (type === "전술") return "bg-cyan-100 text-cyan-700";
+  return "bg-rose-100 text-rose-700"; // 교정 (기본)
+}
+
 function getCategoryBadgeClass(category: string | null | undefined): string {
   if (!category) return "bg-gray-100 text-gray-700";
   const lower = category.toLowerCase();
@@ -80,11 +87,11 @@ export function mergeFeedbackItems(
 ): FeedbackItem[] {
   const items: FeedbackItem[] = [];
 
-  // 1. court_tactics를 기준으로 먼저 넣기
   const tactics = courtTactics ?? [];
-  const usedTimestampSecs = new Set<number>();
 
+  // 1. court_tactics 기준으로 넣되, 같은 시점의 timestamp fix도 합침
   for (const ct of tactics) {
+    const matchingTs = timestamps.find((ts) => Math.abs(ct.sec - ts.sec) <= 5);
     items.push({
       sec: ct.sec,
       category: ct.category,
@@ -92,19 +99,18 @@ export function mergeFeedbackItems(
       tactic: ct.tactic,
       label: ct.label,
       quote: ct.quote ?? null,
-      fix: null,
+      fix: matchingTs?.fix ?? null,  // timestamps의 fix 병합
       source: "court",
     });
   }
 
-  // 2. timestamps 중 court_tactics에 없는 sec(+-5초 이내면 같은 것)는 추가
+  // 2. court_tactics에 없는 timestamps만 추가
   for (const ts of timestamps) {
-    const isDuplicate = tactics.some(
-      (ct) => Math.abs(ct.sec - ts.sec) <= 5,
-    );
+    const isDuplicate = tactics.some((ct) => Math.abs(ct.sec - ts.sec) <= 5);
     if (!isDuplicate) {
       items.push({
         sec: ts.sec,
+        type: ts.type,
         category: ts.category ?? null,
         position: null,
         tactic: null,
@@ -113,8 +119,6 @@ export function mergeFeedbackItems(
         fix: ts.fix ?? null,
         source: "timestamp",
       });
-    } else {
-      usedTimestampSecs.add(ts.sec);
     }
   }
 

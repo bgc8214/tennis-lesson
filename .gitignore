@@ -14,3 +14,4 @@ frontend/.vercel/
 
 # misc
 .DS_Store
+backend/yolo11n.pt

@@ -27,6 +27,12 @@ function getCategoryColor(category: string | null | undefined): string {
   return "#6b7280"; // gray-500
 }
 
+function getTypeBadgeClass(type: string | null | undefined): string {
+  if (type === "드릴") return "bg-amber-100 text-amber-700";
+  if (type === "전술") return "bg-cyan-100 text-cyan-700";
+  return "bg-rose-100 text-rose-700";
+}
+
 function getCategoryBadgeClass(category: string | null | undefined): string {
   if (!category) return "bg-gray-100 text-gray-700";
   const lower = category.toLowerCase();
@@ -403,6 +409,9 @@ export function CourtDiagram({
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-900 text-[10px] font-bold text-white">{i + 1}</span>
+                    {item.type && (
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getTypeBadgeClass(item.type)}`}>{item.type}</span>
+                    )}
                     {item.category && (
                       <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getCategoryBadgeClass(item.category)}`}>{item.category}</span>
                     )}

@@ -115,7 +115,7 @@ def _update_progress(sb, lesson_id: str, step: int, message: str, now_fn) -> Non
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
+def _run_analysis_pipeline(lesson_id: str, youtube_url: str, analyze_court: bool = False) -> None:
     """비동기 BackgroundTask로 실행되는 전체 파이프라인.
 
     상태 전이:
@@ -184,7 +184,6 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
                 "steps": report.get("steps") or [],
                 "scenarios": report.get("scenarios") or [],
                 "timestamps": report.get("timestamps") or [],
-                "transcript_text": report.get("transcript_text"),
                 "transcript_source": transcript_source,
                 "gemini_model": report.get("gemini_model") or settings.GEMINI_MODEL,
                 "processing_status": "DONE",
@@ -227,23 +226,21 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
         logger.error("[%s] failed to save DONE state: %s", lesson_id, e)
         return
 
+    # 크레딧 차감 (로그인 유저만)
+    from app.auth import ANONYMOUS_USER_ID
+    lesson_row = sb.table("lessons").select("user_id").eq("id", lesson_id).limit(1).execute()
+    lesson_user_id = (lesson_row.data or [{}])[0].get("user_id")
+    if lesson_user_id and lesson_user_id != ANONYMOUS_USER_ID:
+        try:
+            sb.rpc("decrement_credits", {"p_user_id": lesson_user_id, "p_lesson_id": lesson_id}).execute()
+        except Exception as e:
+            logger.warning("[%s] credit deduction failed: %s", lesson_id, e)
+
     # Phase 2: Transcript + Court Tactics 병렬 실행
     from concurrent.futures import ThreadPoolExecutor
 
-    def _run_transcript() -> None:
-        transcript = report.get("transcript_text")
-        if not transcript:
-            return
-        try:
-            sb.table("lesson_reports").update(
-                {"transcript_text": transcript, "updated_at": now()}
-            ).eq("lesson_id", lesson_id).execute()
-            logger.info("[%s] transcript saved", lesson_id)
-        except Exception as e:
-            logger.warning("[%s] transcript save failed: %s", lesson_id, e)
-
     def _run_court() -> None:
-        if not (get_settings().COURT_ANALYSIS_ENABLED and report.get("timestamps")):
+        if not (analyze_court and get_settings().COURT_ANALYSIS_ENABLED and report.get("timestamps")):
             return
         try:
             sb.table("lesson_reports").update(
@@ -268,8 +265,8 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str) -> None:
             except Exception:
                 pass
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(_run_transcript), executor.submit(_run_court)]
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        futures = [executor.submit(_run_court)]
         for f in futures:
             try:
                 f.result()
@@ -346,6 +343,27 @@ def analyze_lesson(
     sb = get_supabase_client()
 
     youtube_url = str(payload.youtube_url)
+
+    # 0) 크레딧 체크 (로그인 유저만)
+    from app.auth import ANONYMOUS_USER_ID
+    if user_id != ANONYMOUS_USER_ID:
+        try:
+            credit_res = sb.table("user_credits").select("credits").eq("user_id", user_id).limit(1).execute()
+            if not credit_res.data:
+                # 크레딧 행이 없으면 생성 (3크레딧)
+                sb.table("user_credits").insert({"user_id": user_id, "credits": 3}).execute()
+                credits = 3
+            else:
+                credits = credit_res.data[0]["credits"]
+            if credits <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=_err("INSUFFICIENT_CREDITS", "크레딧이 부족합니다. 충전 후 이용해주세요."),
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("credit check failed (skipping): %s", e)
 
     # 1) video_id 추출 검증
     try:
@@ -464,7 +482,7 @@ def analyze_lesson(
         logger.warning("report shell insert failed: %s", e)
 
     # 6) 백그라운드 분석 트리거
-    background_tasks.add_task(_run_analysis_pipeline, lesson_id, youtube_url)
+    background_tasks.add_task(_run_analysis_pipeline, lesson_id, youtube_url, payload.analyze_court)
 
     return {
         "data": {
