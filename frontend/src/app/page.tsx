@@ -5,7 +5,7 @@ import { UrlInputForm } from "@/components/UrlInputForm";
 import { LessonCard, LessonCardSkeleton } from "@/components/LessonCard";
 import { LessonTypeFilter } from "@/components/LessonTypeFilter";
 import { InsightPanel } from "@/components/InsightPanel";
-import { getLessons } from "@/lib/api";
+import { getLessons, getLessonCount } from "@/lib/api";
 import { ApiCallError, type LessonSummary } from "@/types/lesson";
 import { useAnalysisTracker } from "@/lib/AnalysisTracker";
 
@@ -19,18 +19,20 @@ export default function HomePage() {
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
 
   const loadLessons = useCallback(async () => {
     setIsLoadingList(true);
     setListError(null);
     try {
-      const res = await getLessons({
-        limit: PAGE_SIZE,
-        lesson_type: selectedType ?? undefined,
-      });
+      const [res, count] = await Promise.all([
+        getLessons({ limit: PAGE_SIZE, lesson_type: selectedType ?? undefined }),
+        getLessonCount(selectedType ?? undefined),
+      ]);
       setLessons(res.data);
       setNextOffset(res.pagination.has_more ? PAGE_SIZE : null);
       setHasMore(res.pagination.has_more);
+      setTotalCount(count);
     } catch (err) {
       if (err instanceof ApiCallError && err.status === 401) {
         setLessons([]);
@@ -105,8 +107,8 @@ export default function HomePage() {
           <h2 className="text-lg font-bold text-gray-900 sm:text-xl">
             최근 레슨
           </h2>
-          {lessons.length > 0 && (
-            <span className="text-xs text-gray-500">총 {lessons.length}개</span>
+          {totalCount !== null && totalCount > 0 && (
+            <span className="text-xs text-gray-500">총 {totalCount}개</span>
           )}
         </div>
 

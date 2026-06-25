@@ -108,6 +108,18 @@ function rowToSummary(row: Record<string, unknown>): LessonSummary {
   };
 }
 
+/** 전체 레슨 개수 조회 */
+export async function getLessonCount(lesson_type?: string): Promise<number> {
+  const supabase = getSupabaseClient();
+  let q = supabase
+    .from("lessons")
+    .select("id", { count: "exact", head: true })
+    .eq("is_hidden", false);
+  if (lesson_type) q = q.contains("lesson_type", [lesson_type]);
+  const { count } = await q;
+  return count ?? 0;
+}
+
 /** GET lessons — Supabase 직접 쿼리 */
 export async function getLessons(params: {
   limit?: number;
