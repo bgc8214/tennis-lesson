@@ -42,11 +42,12 @@ export function Header() {
 
   const handleGoogleLogin = async () => {
     const supabase = getSupabaseClient();
+    const redirectTo = process.env.NEXT_PUBLIC_SITE_URL
+      ? `${process.env.NEXT_PUBLIC_SITE_URL}/`
+      : `${window.location.origin}/`;
     await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/`,
-      },
+      options: { redirectTo },
     });
   };
 
