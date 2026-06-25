@@ -25,6 +25,7 @@ class LessonAnalyzeRequest(BaseModel):
     youtube_url: str = Field(min_length=1, max_length=500)
     title: Optional[str] = Field(default=None, max_length=200)
     lesson_date: Optional[date] = None
+    analyze_court: bool = Field(default=False, description="코트 전술 분석 실행 여부")
 
 
 class LessonAnalyzeResponse(BaseModel):

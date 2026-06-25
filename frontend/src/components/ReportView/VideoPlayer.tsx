@@ -118,15 +118,11 @@ export function VideoPlayer({
     if (requestedSec === undefined) return;
     const player = playerRef.current;
     if (player && isReady) {
-      // Gemini 타임스탬프는 피드백 발화 시점 기준이라 실제 장면보다 살짝 늦음
-      // 5초 앞으로 이동해서 해당 장면을 먼저 볼 수 있게
-      const adjustedSec = Math.max(0, requestedSec - 5);
-      player.seekTo(adjustedSec, true);
+      player.seekTo(requestedSec, true);
       player.playVideo();
     } else if (requestedSec !== undefined) {
       // 폴백: 새 탭으로 시간 지정 링크
-      const adjustedSec = Math.max(0, requestedSec - 5);
-      const url = `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.floor(adjustedSec)}s`;
+      const url = `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.floor(requestedSec)}s`;
       window.open(url, "_blank", "noopener,noreferrer");
     }
   }, [requestedSec, isReady, youtubeVideoId]);

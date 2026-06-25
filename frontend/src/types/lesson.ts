@@ -80,6 +80,7 @@ export interface PaginatedResponse<T> {
 
 export interface LessonTimestamp {
   sec: number;
+  type?: "교정" | "드릴" | "전술";
   category?: string | null;
   label: string;
   quote?: string | null;
@@ -95,6 +96,7 @@ export interface LessonReport {
   timestamps: LessonTimestamp[];
   full_summary: string | null;
   transcript_source: TranscriptSource;
+  transcript_text?: string | null;
   gemini_model: string | null;
   error_message?: string | null;
   completed_at?: string | null;
@@ -122,6 +124,7 @@ export interface LessonAnalyzeRequest {
   youtube_url: string;
   title?: string;
   lesson_date?: string;
+  analyze_court?: boolean;
 }
 
 export interface LessonAnalyzeResponse {

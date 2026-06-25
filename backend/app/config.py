@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # === 분석 파이프라인 ===
     ANALYZE_TIMEOUT_SEC: int = 600
     TRANSCRIPT_PREFERRED_LANGUAGES: str = "ko,ko-KR,en"
+    # gemini: 오디오 직접 업로드 (빠름, 타임스탬프 오차 ±30초)
+    # whisper: 로컬 STT 후 텍스트 전달 (느림, 타임스탬프 오차 ±3초)
+    TRANSCRIPT_ENGINE: str = "gemini"
 
     # === Court Analysis (Phase 2) ===
     COURT_ANALYSIS_ENABLED: bool = False  # 기본값 False (점진적 롤아웃)

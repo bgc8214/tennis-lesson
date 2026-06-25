@@ -42,6 +42,7 @@ export default function LessonDetailPage() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const [pollKey, setPollKey] = useState(0); // 재시도 시 폴링 강제 재시작
   const titleInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -105,7 +106,7 @@ export default function LessonDetailPage() {
       cancelled = true;
       stopPolling();
     };
-  }, [lessonId, fetchLesson]);
+  }, [lessonId, fetchLesson, pollKey]);
 
   // Realtime 구독 (lesson_reports 변경 감지 시 즉시 재조회)
   useEffect(() => {
@@ -317,7 +318,7 @@ export default function LessonDetailPage() {
           message={lesson.report?.progress_message}
         />
       ) : status === "FAILED" ? (
-        <FailedPlaceholder lesson={lesson} />
+        <FailedPlaceholder lesson={lesson} onRetrySuccess={() => setPollKey(k => k + 1)} />
       ) : (
         <ReportView lesson={lesson} startSec={startSec} />
       )}
@@ -388,9 +389,8 @@ function ProcessingPlaceholder({
   );
 }
 
-function FailedPlaceholder({ lesson }: { lesson: LessonDetail }) {
+function FailedPlaceholder({ lesson, onRetrySuccess }: { lesson: LessonDetail; onRetrySuccess?: () => void }) {
   const [retrying, setRetrying] = React.useState(false);
-  const router = useRouter();
 
   const message =
     lesson.report?.error_message ??
@@ -404,7 +404,9 @@ function FailedPlaceholder({ lesson }: { lesson: LessonDetail }) {
         { method: "POST" }
       );
       if (res.ok) {
-        router.refresh();
+        onRetrySuccess?.();
+      } else {
+        setRetrying(false);
       }
     } catch {
       setRetrying(false);
