@@ -1,15 +1,10 @@
 "use client";
 
-import { createBrowserClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 let cachedClient: SupabaseClient | null = null;
 
-/**
- * 브라우저 환경 Supabase 클라이언트 (싱글턴).
- * - anon key 사용. RLS 정책에 의해 본인 row 만 SELECT/DELETE 가능.
- * - 세션 토큰은 localStorage 가 아닌 쿠키 기반으로 관리되어 SSR 과 공유.
- */
 export function getSupabaseClient(): SupabaseClient {
   if (cachedClient) return cachedClient;
 
@@ -22,7 +17,16 @@ export function getSupabaseClient(): SupabaseClient {
     );
   }
 
-  cachedClient = createBrowserClient(url, anonKey);
+  // localStorage 기반 세션 — OAuth 콜백 후 세션이 안정적으로 유지됨
+  cachedClient = createClient(url, anonKey, {
+    auth: {
+      persistSession: true,
+      storageKey: "sb-bjcfxhodpucnoynpbdfm-auth-token",
+      storage: typeof window !== "undefined" ? window.localStorage : undefined,
+      detectSessionInUrl: true,
+      flowType: "pkce",
+    },
+  });
   return cachedClient;
 }
 

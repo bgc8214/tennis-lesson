@@ -1,6 +1,6 @@
 """google-genai SDK 기반 오답노트 리포트 생성 서비스.
 
-전략: 전체 오디오 다운로드 → 10분 청크로 분할 → 청크별 병렬 분석 → 최종 합산
+전략: 전체 오디오 다운로드 → 짧은 청크로 분할 → 청크별 병렬 분석 → 최종 합산
 """
 
 from __future__ import annotations
@@ -18,9 +18,13 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SECONDS = 20       # 청크당 20초 — offset 자체가 타임스탬프
+CHUNK_SECONDS = 20       # 청크당 20초 — Gemini가 청크 내부 local_start_sec를 추정
 MAX_CHUNKS = 200         # 최대 ~67분
 MAX_WORKERS = 10         # 병렬 Gemini 호출 수
+MIN_FEEDBACK_CONFIDENCE = 0.65
+MAX_TIMELINE_ITEMS = 45
+TIMELINE_DEDUP_WINDOW_SEC = 25
+TIMELINE_MIN_GAP_SEC = 35
 
 # ─── 프롬프트 ─────────────────────────────────────────────────────────
 
@@ -30,9 +34,27 @@ CHUNK_PROMPT = (
     '등장인물:\n'
     '- 코치(여성): 지시·교정·시범·설명을 하는 쪽. 주로 짧고 단호한 말투.\n'
     '- 수강생(남성): 질문하거나 "네", "아" 등으로 반응하는 쪽.\n\n'
-    '코치의 모든 발언을 유형별로 분류하여 JSON으로 출력하세요.\n\n'
+    '코치가 수강생에게 한 명확한 테니스 피드백만 유형별로 분류하여 JSON으로 출력하세요.\n\n'
+    'feedback으로 인정하는 것:\n'
+    '- 잘못된 동작 지적: "타점이 뒤야", "라켓이 늦어", "몸이 열려"\n'
+    '- 교정 지시: "앞에서 맞춰", "왼손 더 버텨", "라켓 먼저 빼"\n'
+    '- 연습 방법: "크로스 세 개 치고 다운더라인", "하나 치고 두 개 치고"\n'
+    '- 전술 판단: "짧은 공이면 들어와", "서브 후 포지션 잡아"\n\n'
+    'feedback에서 제외하는 것:\n'
+    '- 수강생 대답/추임새: "네", "아", "맞아요", "오케이요"\n'
+    '- 단순 칭찬/진행 멘트: "좋아", "오케이", "그렇지", "하나 더", "다시", "자"\n'
+    '- 카운트만 하는 말, 공 소리, 숨소리, 불명확한 발화\n'
+    '- 단순 시작 신호: "시작", "준비", "하나 둘"만 있는 말\n'
+    '- 레슨과 무관한 주변 대화: 핸드폰, 아이, 잡담 등\n'
+    '- 들리지 않는 내용을 추측한 문장\n\n'
     '{"feedbacks": ['
-    '{"type": "교정|드릴|전술", "category": "포핸드", "label": "요약", "quote": "코치 발언 원문", "fix": "교정법 또는 드릴 내용"}'
+    '{'
+    '"local_start_sec": 0.0, "local_end_sec": 0.0, '
+    '"type": "교정|드릴|전술", "category": "포핸드", "label": "요약", '
+    '"quote": "실제 들린 코치 발언 원문", "problem": "문제 동작", '
+    '"fix": "교정법 또는 드릴 내용", "importance": "high|medium|low", '
+    '"confidence": 0.0'
+    '}'
     '], "keywords": ["단어1", "단어2"]}\n\n'
     '규칙:\n'
     'type 분류:\n'
@@ -40,18 +62,25 @@ CHUNK_PROMPT = (
     '  - "드릴": 특정 연습 방법·순서를 지시하는 발언 (예: "하나 치고 두 개 치고 스트레이트로", "크로스 세 개 다음에 다운더라인")\n'
     '  - "전술": 경기 상황 판단·배치·전략을 설명하는 발언 (예: "짧은 공 오면 네트로 들어와", "서브 후 포지션")\n'
     'category: 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
+    'local_start_sec: 이 클립 안에서 해당 코치 발언이 시작된 대략 초. 0 이상 클립 길이 이하 숫자.\n'
+    'local_end_sec: 이 클립 안에서 해당 코치 발언이 끝난 대략 초. 모르면 local_start_sec와 같게.\n'
     'label: 발언 내용 핵심 20자 이내.\n'
-    'quote: 코치 발언 원문 그대로. 수강생 발화 혼입 금지.\n'
+    'quote: 실제 들린 코치 발언 원문 그대로. 요약 금지. 수강생 발화 혼입 금지.\n'
+    'problem: 코치가 지적한 문제 동작. 명확하지 않으면 빈 문자열.\n'
     'fix: 교정법 또는 드릴·전술 내용. 오디오에서 언급된 것만.\n'
+    'importance: 레슨 복기에 중요한 핵심 피드백이면 high, 일반 지시면 medium, 보조적이면 low.\n'
+    'confidence: 0.0~1.0. 발화자/내용/시간이 모두 확실할수록 높게.\n'
     '테니스 용어 참고: 타점·팔로우스루·내전·라켓드롭·토스·발리·스플릿스텝·풋워크·크로스·다운더라인.\n'
+    '중요: "시작", "준비", "세 개", "하나 둘"처럼 드릴 진행 신호만 있으면 feedbacks에 넣지 말 것.\n'
+    '중요: confidence가 0.65 미만이면 feedbacks에 넣지 말 것.\n'
     '중요: 코치의 명확한 발언이 들리지 않으면 feedbacks를 반드시 빈 배열 []로 반환할 것.\n'
     '추측하거나 공 소리·배경 소음만 있는 구간은 절대 feedbacks에 넣지 말 것.\n'
-    'feedbacks는 최대 20개. 교정·드릴·전술 모두 포함. 순수 JSON만, 펜스 금지.'
+    'feedbacks는 최대 5개. 교정·드릴·전술 모두 포함. 순수 JSON만, 펜스 금지.'
 )
 
 MERGE_PROMPT_TEMPLATE = (
     '당신은 테니스 레슨 분석 전문가입니다.\n'
-    '여성 코치가 남성 수강생에게 진행한 1:1 레슨을 10분씩 나눠 분석한 청크별 결과입니다.\n'
+    '여성 코치가 남성 수강생에게 진행한 1:1 레슨을 짧은 구간별로 분석한 결과입니다.\n'
     '아래 형식의 JSON 하나만 출력하세요. timestamps 필드는 없음. 설명·주석 없이 JSON만.\n\n'
     '{chunk_results}\n\n'
     '{{"card1_problem":"50자이내","card2_cueing":"50자이내","card3_action":"60자이내",'
@@ -59,10 +88,11 @@ MERGE_PROMPT_TEMPLATE = (
     '"steps":[],"scenarios":[]}}\n\n'
     '규칙:\n'
     '1) 모든 문자열 한국어. 자 이내 제한 엄수.\n'
-    '2) steps: 코치가 알려준 기술 동작 순서 3~5개. 없으면 [].\n'
-    '3) scenarios: 상황별 대처 1~3개. 없으면 [].\n'
-    '4) timestamps는 출력하지 않음 — 별도 처리됨.\n'
-    '5) 순수 JSON만. 펜스·설명 금지.'
+    '2) card1_problem은 high importance 또는 반복 등장한 교정 피드백을 우선 반영.\n'
+    '3) steps: 코치가 알려준 기술 동작 순서 3~5개. 없으면 [].\n'
+    '4) scenarios: 상황별 대처 1~3개. 없으면 [].\n'
+    '5) timestamps는 출력하지 않음 — 별도 처리됨.\n'
+    '6) 순수 JSON만. 펜스·설명 금지.'
 )
 
 ALLOWED_LESSON_TYPES = {
@@ -166,6 +196,147 @@ def _coerce_scenarios(value: Any) -> List[Dict[str, str]]:
     return out[:4]
 
 
+def _coerce_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_float(value: float, min_value: float, max_value: float) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def _normalize_importance(value: Any) -> str:
+    importance = str(value or "").strip().lower()
+    if importance in ("high", "medium", "low"):
+        return importance
+    return "medium"
+
+
+def _normalize_text_for_dedupe(value: Any) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "").lower())
+
+
+def _is_emptyish(value: Any) -> bool:
+    normalized = _normalize_text_for_dedupe(value)
+    return normalized in ("", "none", "null", "없음")
+
+
+def _is_progress_only_feedback(item: Dict[str, Any]) -> bool:
+    text = " ".join(
+        str(item.get(key) or "")
+        for key in ("label", "quote", "problem", "fix")
+    )
+    normalized = _normalize_text_for_dedupe(text)
+    progress_words = (
+        "시작", "준비", "하나둘", "세개", "다시", "오케이",
+        "좋아", "그렇지", "자", "아기핸드폰",
+    )
+    if any(word in normalized for word in progress_words):
+        if item.get("type") == "드릴" or item.get("importance") == "low":
+            return True
+    return False
+
+
+def _timestamp_score(item: Dict[str, Any]) -> float:
+    score = 0.0
+    importance = _normalize_importance(item.get("importance"))
+    if importance == "high":
+        score += 3.0
+    elif importance == "medium":
+        score += 1.5
+
+    if item.get("type") == "교정":
+        score += 1.0
+    elif item.get("type") == "전술":
+        score += 0.8
+
+    confidence = _coerce_float(item.get("confidence"), 0.0) or 0.0
+    score += confidence
+
+    if not _is_emptyish(item.get("problem")):
+        score += 0.8
+    if not _is_emptyish(item.get("fix")):
+        score += 0.5
+
+    if _is_progress_only_feedback(item):
+        score -= 4.0
+    if importance == "low":
+        score -= 2.0
+    return score
+
+
+def _is_near_duplicate(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    try:
+        sec_a = int(a.get("sec", 0))
+        sec_b = int(b.get("sec", 0))
+    except (TypeError, ValueError):
+        return False
+    if abs(sec_a - sec_b) > TIMELINE_DEDUP_WINDOW_SEC:
+        return False
+
+    comparable_keys = ("quote", "label", "problem", "fix")
+    for key in comparable_keys:
+        av = _normalize_text_for_dedupe(a.get(key))
+        bv = _normalize_text_for_dedupe(b.get(key))
+        if av and bv and av == bv:
+            return True
+
+    return (
+        _normalize_text_for_dedupe(a.get("category")) == _normalize_text_for_dedupe(b.get("category"))
+        and _normalize_text_for_dedupe(a.get("label")) == _normalize_text_for_dedupe(b.get("label"))
+    )
+
+
+def _compact_timestamps(timestamps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Dense chunk feedbacks를 복기용 핵심 타임라인으로 압축한다."""
+    if not timestamps:
+        return []
+
+    ordered = sorted(timestamps, key=lambda item: int(item.get("sec", 0)))
+    deduped: List[Dict[str, Any]] = []
+    for item in ordered:
+        if _is_progress_only_feedback(item) and _normalize_importance(item.get("importance")) != "high":
+            continue
+
+        duplicate_index = next(
+            (idx for idx, prev in enumerate(deduped) if _is_near_duplicate(item, prev)),
+            None,
+        )
+        if duplicate_index is None:
+            deduped.append(item)
+            continue
+
+        if _timestamp_score(item) > _timestamp_score(deduped[duplicate_index]):
+            deduped[duplicate_index] = item
+
+    if len(deduped) <= MAX_TIMELINE_ITEMS:
+        return sorted(deduped, key=lambda item: int(item.get("sec", 0)))
+
+    ranked = sorted(deduped, key=_timestamp_score, reverse=True)
+    selected: List[Dict[str, Any]] = []
+    for item in ranked:
+        sec = int(item.get("sec", 0))
+        if any(abs(sec - int(prev.get("sec", 0))) < TIMELINE_MIN_GAP_SEC for prev in selected):
+            continue
+        selected.append(item)
+        if len(selected) >= MAX_TIMELINE_ITEMS:
+            break
+
+    if len(selected) < MAX_TIMELINE_ITEMS:
+        selected_ids = {id(item) for item in selected}
+        for item in ranked:
+            if id(item) in selected_ids:
+                continue
+            selected.append(item)
+            selected_ids.add(id(item))
+            if len(selected) >= MAX_TIMELINE_ITEMS:
+                break
+
+    return sorted(selected, key=lambda item: int(item.get("sec", 0)))
+
+
 def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -182,13 +353,17 @@ def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
         ts_type = str(item.get("type", "")).strip()
         if ts_type not in ("교정", "드릴", "전술"):
             ts_type = "교정"
+        confidence = _coerce_float(item.get("confidence"))
         out.append({
             "sec": sec,
             "type": ts_type,
             "category": str(item.get("category", "")).strip() or None,
             "label": str(item.get("label", "")).strip() or "주요 지적",
             "quote": str(item.get("quote", "")).strip() or None,
+            "problem": str(item.get("problem", "")).strip() or None,
             "fix": str(item.get("fix", "")).strip() or None,
+            "importance": _normalize_importance(item.get("importance")),
+            "confidence": round(_clamp_float(confidence, 0.0, 1.0), 2) if confidence is not None else None,
         })
     return out
 
@@ -196,7 +371,7 @@ def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
 # ─── 오디오 처리 ──────────────────────────────────────────────────────
 
 def _download_full_audio(youtube_url: str, tmp_dir: str) -> str:
-    """전체 오디오를 mp3로 다운로드."""
+    """전체 오디오를 mp3로 다운로드 (네트워크 오류 시 최대 3회 재시도)."""
     import yt_dlp
     ydl_opts = {
         "format": "bestaudio/best",
@@ -204,15 +379,25 @@ def _download_full_audio(youtube_url: str, tmp_dir: str) -> str:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "retries": 3,
+        "fragment_retries": 3,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "64"}],
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([youtube_url])
-
-    for name in os.listdir(tmp_dir):
-        if name.lower().endswith(".mp3"):
-            return os.path.join(tmp_dir, name)
-    raise RuntimeError("오디오 다운로드 실패")
+    last_error = None
+    for attempt in range(3):
+        try:
+            # 이전 실패로 남은 파일 정리
+            for f in os.listdir(tmp_dir):
+                os.remove(os.path.join(tmp_dir, f))
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([youtube_url])
+            for name in os.listdir(tmp_dir):
+                if name.lower().endswith(".mp3"):
+                    return os.path.join(tmp_dir, name)
+        except Exception as e:
+            last_error = e
+            logger.warning("오디오 다운로드 실패 (시도 %d/3): %s", attempt + 1, e)
+    raise RuntimeError(f"오디오 다운로드 실패: {last_error}")
 
 
 def _get_duration(audio_path: str) -> float:
@@ -316,9 +501,35 @@ def _analyze_chunk(client: Any, chunk: Dict, types: Any) -> Optional[Dict]:
         logger.info("청크 응답 (offset=%ds, 길이=%d): %s", offset, len(raw), raw[:200])
         parsed = _parse_json(raw)
 
-        # sec는 Gemini 추정 대신 offset으로 고정 (10초 청크이므로 오차 최대 10초)
+        normalized_feedbacks = []
         for fb in parsed.get("feedbacks", []):
-            fb["sec"] = offset
+            if not isinstance(fb, dict):
+                continue
+
+            confidence = _coerce_float(fb.get("confidence"), 1.0)
+            if confidence is not None and confidence < MIN_FEEDBACK_CONFIDENCE:
+                continue
+
+            local_start = _coerce_float(fb.get("local_start_sec"))
+            if local_start is None:
+                # 모델이 시간을 누락한 경우 청크 중앙값을 사용해 기존 offset 고정보다 오차를 줄인다.
+                local_start = duration / 2 if duration > 0 else 0.0
+            local_start = _clamp_float(local_start, 0.0, max(duration, 0.0))
+
+            local_end = _coerce_float(fb.get("local_end_sec"), local_start)
+            if local_end is None:
+                local_end = local_start
+            local_end = _clamp_float(local_end, local_start, max(duration, local_start))
+
+            fb["local_start_sec"] = round(local_start, 1)
+            fb["local_end_sec"] = round(local_end, 1)
+            fb["sec"] = offset + int(round(local_start))
+            fb["importance"] = _normalize_importance(fb.get("importance"))
+            if confidence is not None:
+                fb["confidence"] = round(_clamp_float(confidence, 0.0, 1.0), 2)
+            normalized_feedbacks.append(fb)
+
+        parsed["feedbacks"] = normalized_feedbacks
 
         parsed["offset_sec"] = offset
         logger.info("청크 분석 완료 (offset=%ds, feedbacks=%d)", offset, len(parsed.get("feedbacks", [])))
@@ -361,23 +572,33 @@ def _merge_chunks(client: Any, chunk_results: List[Dict], types: Any) -> dict:
 
     for r in chunk_results:
         offset = r.get("offset_sec", 0)
-        mins = offset // 60
+        start_m = offset // 60
+        start_s = offset % 60
         feedbacks = r.get("feedbacks", [])
         keywords = r.get("keywords", [])
-        lines = [f"\n## {mins}분~{mins+10}분 구간"]
+        lines = [f"\n## {start_m}분{start_s:02d}초 부근 구간"]
         if feedbacks:
             for fb in feedbacks:
                 fb_type = fb.get("type", "교정")
                 label = fb.get("label") or fb.get("problem", "")
-                lines.append(f"- [{fb['sec']}초][{fb_type}] {label} / 발언: {fb.get('quote','')}")
+                importance = _normalize_importance(fb.get("importance"))
+                confidence = _coerce_float(fb.get("confidence"))
+                confidence_text = f", 신뢰도 {confidence:.2f}" if confidence is not None else ""
+                lines.append(
+                    f"- [{fb['sec']}초][{fb_type}][{importance}{confidence_text}] "
+                    f"{label} / 발언: {fb.get('quote','')}"
+                )
                 # timestamps 직접 수집
                 raw_timestamps.append({
-                    "sec": fb.get("sec", offset),  # _analyze_chunk에서 이미 offset으로 세팅됨
+                    "sec": fb.get("sec", offset),  # _analyze_chunk에서 local_start_sec를 더해 계산됨
                     "type": fb_type,
                     "category": str(fb.get("category", "")).strip() or None,
                     "label": str(label).strip()[:20] or "피드백",
                     "quote": str(fb.get("quote", "")).strip()[:30] or None,
+                    "problem": str(fb.get("problem", "")).strip()[:30] or None,
                     "fix": str(fb.get("fix", "")).strip()[:30] or None,
+                    "importance": importance,
+                    "confidence": round(_clamp_float(confidence, 0.0, 1.0), 2) if confidence is not None else None,
                 })
         else:
             lines.append("- 피드백 없음")
@@ -398,6 +619,7 @@ def _merge_chunks(client: Any, chunk_results: List[Dict], types: Any) -> dict:
         if not is_dup:
             deduped.append(ts)
     raw_timestamps = deduped
+    raw_timestamps = _compact_timestamps(raw_timestamps)
 
     chunk_text = "\n".join(summary_lines)
     prompt = MERGE_PROMPT_TEMPLATE.format(chunk_results=chunk_text)
@@ -506,14 +728,27 @@ def generate_lesson_report(
             feedbacks = r.get("feedbacks", [])
             parsed = {
                 "card1_problem": feedbacks[0].get("problem") if feedbacks else None,
-                "card2_cueing": feedbacks[0].get("cueing") if feedbacks else None,
+                "card2_cueing": feedbacks[0].get("fix") if feedbacks else None,
                 "card3_action": None,
                 "full_summary": None,
                 "keywords": r.get("keywords", []),
                 "lesson_type": r.get("lesson_type", []),
                 "steps": r.get("steps", []),
                 "scenarios": r.get("scenarios", []),
-                "timestamps": [{"sec": fb["sec"], "category": fb.get("category",""), "label": fb.get("problem",""), "quote": fb.get("quote",""), "fix": fb.get("fix","")} for fb in feedbacks],
+                "timestamps": [
+                    {
+                        "sec": fb["sec"],
+                        "type": fb.get("type", "교정"),
+                        "category": fb.get("category", ""),
+                        "label": fb.get("label") or fb.get("problem", ""),
+                        "quote": fb.get("quote", ""),
+                        "problem": fb.get("problem", ""),
+                        "fix": fb.get("fix", ""),
+                        "importance": _normalize_importance(fb.get("importance")),
+                        "confidence": fb.get("confidence"),
+                    }
+                    for fb in feedbacks
+                ],
             }
         else:
             # 합산 단계 진입 알림 (3/3)
@@ -530,7 +765,7 @@ def generate_lesson_report(
         "lesson_type":     _coerce_lesson_type(parsed.get("lesson_type")),
         "steps":           _coerce_steps(parsed.get("steps")),
         "scenarios":       _coerce_scenarios(parsed.get("scenarios")),
-        "timestamps":      _coerce_timestamps(parsed.get("timestamps")),
+        "timestamps":      _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
         "gemini_model":    settings.GEMINI_MODEL,
     }
 
@@ -639,7 +874,7 @@ def generate_lesson_report_whisper(
         "lesson_type":   _coerce_lesson_type(parsed.get("lesson_type")),
         "steps":         _coerce_steps(parsed.get("steps")),
         "scenarios":     _coerce_scenarios(parsed.get("scenarios")),
-        "timestamps":    _coerce_timestamps(parsed.get("timestamps")),
+        "timestamps":    _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
         "gemini_model":  settings.GEMINI_MODEL,
         "transcript_text": transcript_text,
     }

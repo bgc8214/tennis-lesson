@@ -84,7 +84,10 @@ export interface LessonTimestamp {
   category?: string | null;
   label: string;
   quote?: string | null;
+  problem?: string | null;
   fix?: string | null;
+  importance?: "high" | "medium" | "low";
+  confidence?: number | null;
   severity?: "critical" | "normal";
 }
 

@@ -409,14 +409,51 @@ def analyze_lesson(
     try:
         existing = (
             sb.table("lessons")
-            .select("id")
+            .select("id, youtube_url, created_at, lesson_reports(processing_status)")
             .eq("user_id", user_id)
             .eq("youtube_video_id", video_id)
             .limit(1)
             .execute()
         )
         if existing.data:
-            existing_id = existing.data[0]["id"]
+            existing_row = existing.data[0]
+            existing_id = existing_row["id"]
+            existing_report = existing_row.get("lesson_reports")
+            if isinstance(existing_report, list):
+                existing_report = existing_report[0] if existing_report else None
+            existing_status = (existing_report or {}).get("processing_status") or "PENDING"
+
+            if existing_status == "FAILED":
+                now = lambda: datetime.now(timezone.utc).isoformat()
+                try:
+                    sb.table("lesson_reports").update(
+                        {
+                            "processing_status": "PENDING",
+                            "error_message": None,
+                            "progress_step": 0,
+                            "progress_message": None,
+                            "updated_at": now(),
+                            "completed_at": None,
+                        }
+                    ).eq("lesson_id", existing_id).execute()
+                except Exception as e:
+                    logger.warning("[%s] failed to reset FAILED report: %s", existing_id, e)
+
+                background_tasks.add_task(
+                    _run_analysis_pipeline,
+                    existing_id,
+                    existing_row.get("youtube_url") or youtube_url,
+                    payload.analyze_court,
+                )
+                return {
+                    "data": {
+                        "lesson_id": existing_id,
+                        "processing_status": "PENDING",
+                        "youtube_video_id": video_id,
+                        "created_at": existing_row.get("created_at"),
+                    }
+                }
+
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=_err(
