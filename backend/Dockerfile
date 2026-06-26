@@ -8,14 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 의존성 먼저 설치 (캐시 활용)
+# 의존성 먼저 설치 (requirements.txt 기반 + google-genai 명시)
 COPY requirements.txt .
-RUN pip install --no-cache-dir \
-    fastapi uvicorn[standard] pydantic pydantic-settings \
-    supabase google-generativeai \
-    youtube-transcript-api "yt-dlp>=2026.0.0" \
-    python-multipart httpx PyJWT python-dotenv \
-    faster-whisper
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir google-genai "yt-dlp>=2026.0.0"
 
 # 앱 코드 복사
 COPY main.py .
