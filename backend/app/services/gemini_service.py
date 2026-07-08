@@ -613,7 +613,10 @@ YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
     '당신은 테니스 레슨 전문 분석가입니다.\n'
     '첨부된 YouTube 레슨 영상 중 {start_label}~{end_label} 구간만 집중해서 보고/듣고, '
     '여성 코치가 남성 수강생에게 한 명확한 테니스 피드백만 JSON으로 추출하세요.\n\n'
-    '{{"feedbacks": ['
+    '중요: 영상의 실제 길이가 {start_label}보다 짧아서 이 구간이 아예 존재하지 않을 수 있습니다. '
+    '그런 경우 절대로 내용을 추측하거나 만들어내지 말고, video_ended를 true로 설정하고 '
+    'feedbacks를 빈 배열로 반환하세요.\n\n'
+    '{{"video_ended": false, "feedbacks": ['
     '{{"sec": 123, "type": "교정", "category": "포핸드", "label": "20자 이내 요약", '
     '"quote": "실제 들린 코치 발언 원문", "problem": "문제 동작", '
     '"fix": "교정법", "importance": "high|medium|low", "confidence": 0.85}}'
@@ -625,7 +628,9 @@ YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
     '4) 수강생 반응, 공 소리, 카운트, 단순 칭찬, 잡담, 진행 신호만 있는 장면은 제외.\n'
     '5) quote는 실제 들린 코치 발언 원문에 가깝게 작성. 수강생 발화는 넣지 마세요.\n'
     '6) 확실한 피드백만 최대 8개. 없으면 feedbacks를 빈 배열 []로 반환.\n'
-    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
+    '7) 이 구간이 영상 실제 길이를 넘어서면(영상이 이미 끝났으면) video_ended를 true로, '
+    '그렇지 않으면 false로 반환. 불확실하면 false.\n'
+    '8) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 
@@ -891,6 +896,14 @@ def generate_lesson_report_youtube_url(
         if result:
             segment_results.append(result)
         _notify(2, f"🔍 Gemini가 영상을 구간별 분석 중... (2/3) — {idx}/{total_segments} 구간 완료")
+        # duration 추정이 부정확해 영상 실제 길이를 넘겼다고 모델이 보고하면
+        # 이후 구간은 존재하지 않는 내용을 지어낼 위험이 있으므로 즉시 중단.
+        if result and result.get("video_ended"):
+            logger.info(
+                "[gemini-youtube] 영상 종료 감지 (offset=%ds) — 이후 구간 분석 중단",
+                start_sec,
+            )
+            break
 
     if not segment_results:
         raise RuntimeError("Gemini YouTube URL 구간 분석 결과가 비어 있습니다")
@@ -984,8 +997,10 @@ def _analyze_youtube_url_segment(
         )
         return None
 
+    video_ended = bool(parsed.get("video_ended"))
+
     feedbacks = []
-    for fb in parsed.get("feedbacks", []):
+    for fb in ([] if video_ended else parsed.get("feedbacks", [])):
         if not isinstance(fb, dict):
             continue
         sec = _coerce_float(fb.get("sec"))
@@ -1010,6 +1025,7 @@ def _analyze_youtube_url_segment(
         "offset_sec": start_sec,
         "feedbacks": feedbacks,
         "keywords": _coerce_keywords(parsed.get("keywords")),
+        "video_ended": video_ended,
     }
 
 
