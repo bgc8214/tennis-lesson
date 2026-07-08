@@ -133,7 +133,7 @@ export async function getLessons(params: {
   let q = supabase
     .from("lessons")
     .select("id, youtube_url, youtube_video_id, title, lesson_date, thumbnail_url, duration_sec, lesson_type, created_at, updated_at, lesson_reports(processing_status)")
-    .order("lesson_date", { ascending: false, nullsFirst: false })
+    .order("sort_date", { ascending: false })
     .order("created_at", { ascending: false })
     .range(offset, offset + limit);  // limit+1개 가져와서 has_more 판정
 
