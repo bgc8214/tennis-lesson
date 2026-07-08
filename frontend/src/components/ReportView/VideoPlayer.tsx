@@ -13,6 +13,7 @@ interface YTPlayer {
   seekTo(seconds: number, allowSeekAhead?: boolean): void;
   playVideo(): void;
   destroy(): void;
+  getDuration(): number;
 }
 
 interface YTNamespace {
@@ -35,6 +36,14 @@ declare global {
     YT?: YTNamespace;
     onYouTubeIframeAPIReady?: () => void;
   }
+}
+
+/** 분석 파이프라인이 만든 타임스탬프가 실제 영상 길이를 넘는 경우, seekTo가 무시되고
+ * 재생이 처음으로 돌아가는 유튜브 플레이어 특성을 막기 위해 길이 내로 clamp. */
+function clampToDuration(sec: number, player: YTPlayer | null): number {
+  const duration = player?.getDuration() ?? 0;
+  if (duration > 0 && sec > duration) return Math.max(0, duration - 1);
+  return sec;
 }
 
 let apiLoadingPromise: Promise<YTNamespace> | null = null;
@@ -90,7 +99,8 @@ export function VideoPlayer({
             onReady: () => {
               setIsReady(true);
               if (startSec > 0) {
-                playerRef.current?.seekTo(startSec, true);
+                const clamped = clampToDuration(startSec, playerRef.current);
+                playerRef.current?.seekTo(clamped, true);
                 playerRef.current?.playVideo();
               }
             },
@@ -118,7 +128,7 @@ export function VideoPlayer({
     if (requestedSec === undefined) return;
     const player = playerRef.current;
     if (player && isReady) {
-      player.seekTo(requestedSec, true);
+      player.seekTo(clampToDuration(requestedSec, player), true);
       player.playVideo();
     } else if (requestedSec !== undefined) {
       // 폴백: 새 탭으로 시간 지정 링크
