@@ -136,20 +136,26 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str, analyze_court: bool
     except Exception as e:
         logger.warning("[%s] failed to mark PROCESSING: %s", lesson_id, e)
 
-    # PROCESSING 직후: 1단계 진행 메시지
-    _update_progress(sb, lesson_id, 0, "🎵 오디오 다운로드 중... (1/3)", now)
-
     transcript_source = "UNKNOWN"
 
     try:
         engine = settings.TRANSCRIPT_ENGINE
         if engine == "whisper":
+            _update_progress(sb, lesson_id, 0, "🎵 오디오 다운로드 중... (1/3)", now)
             logger.info("[%s] TRANSCRIPT_ENGINE=whisper 경로 사용", lesson_id)
             report = gemini_service.generate_lesson_report_whisper(
                 youtube_url,
                 on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
             )
+        elif engine == "gemini-youtube":
+            _update_progress(sb, lesson_id, 0, "🎬 YouTube 영상을 Gemini로 불러오는 중... (1/3)", now)
+            logger.info("[%s] TRANSCRIPT_ENGINE=gemini-youtube 경로 사용", lesson_id)
+            report = gemini_service.generate_lesson_report_youtube_url(
+                youtube_url,
+                on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
+            )
         else:
+            _update_progress(sb, lesson_id, 0, "🎵 오디오 다운로드 중... (1/3)", now)
             report = gemini_service.generate_lesson_report(
                 youtube_url,
                 on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),

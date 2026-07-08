@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     ANALYZE_TIMEOUT_SEC: int = 600
     TRANSCRIPT_PREFERRED_LANGUAGES: str = "ko,ko-KR,en"
     # gemini: 오디오 직접 업로드 (빠름, 타임스탬프 오차 ±30초)
+    # gemini-youtube: Gemini에 public YouTube URL 직접 전달 (yt-dlp 미사용, preview 기능)
     # whisper: 로컬 STT 후 텍스트 전달 (느림, 타임스탬프 오차 ±3초)
     TRANSCRIPT_ENGINE: str = "gemini"
 

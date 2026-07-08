@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from app.config import get_settings
+from app.services.yt_dlp_helpers import build_youtube_ydl_opts
 
 logger = logging.getLogger(__name__)
 
@@ -168,14 +170,15 @@ def get_video_metadata(video_id: str) -> dict:
     try:
         import yt_dlp  # type: ignore
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        with tempfile.TemporaryDirectory(prefix="tennis-ytdlp-meta-") as tmp_dir:
+            ydl_opts = build_youtube_ydl_opts({
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "noplaylist": True,
+            }, tmp_dir=tmp_dir, logger=logger)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
     except Exception as e:
         logger.warning("yt-dlp metadata fetch failed for %s: %s", video_id, e)
         return {

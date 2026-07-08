@@ -11,10 +11,12 @@ import os
 import re
 import subprocess
 import tempfile
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
 from app.config import get_settings
+from app.services.yt_dlp_helpers import build_youtube_ydl_opts
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,9 @@ MIN_FEEDBACK_CONFIDENCE = 0.65
 MAX_TIMELINE_ITEMS = 45
 TIMELINE_DEDUP_WINDOW_SEC = 25
 TIMELINE_MIN_GAP_SEC = 35
+YOUTUBE_URL_SEGMENT_SECONDS = 5 * 60
+YOUTUBE_URL_FALLBACK_DURATION_SEC = 75 * 60
+YOUTUBE_URL_MAX_DURATION_SEC = 3 * 60 * 60
 
 # ─── 프롬프트 ─────────────────────────────────────────────────────────
 
@@ -371,32 +376,43 @@ def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
 # ─── 오디오 처리 ──────────────────────────────────────────────────────
 
 def _download_full_audio(youtube_url: str, tmp_dir: str) -> str:
-    """전체 오디오를 mp3로 다운로드 (네트워크 오류 시 최대 3회 재시도)."""
+    """전체 오디오를 다운로드 (네트워크 오류 시 최대 3회 재시도)."""
     import yt_dlp
-    ydl_opts = {
-        "format": "bestaudio/best",
+    ydl_opts = build_youtube_ydl_opts({
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": os.path.join(tmp_dir, "full.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "retries": 3,
         "fragment_retries": 3,
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "64"}],
-    }
+    }, tmp_dir=tmp_dir, logger=logger)
+
+    cookiefile = ydl_opts.get("cookiefile")
+    cookiefile = os.path.abspath(cookiefile) if isinstance(cookiefile, str) else None
     last_error = None
     for attempt in range(3):
         try:
             # 이전 실패로 남은 파일 정리
             for f in os.listdir(tmp_dir):
-                os.remove(os.path.join(tmp_dir, f))
+                path = os.path.join(tmp_dir, f)
+                if cookiefile and os.path.abspath(path) == cookiefile:
+                    continue
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([youtube_url])
             for name in os.listdir(tmp_dir):
-                if name.lower().endswith(".mp3"):
-                    return os.path.join(tmp_dir, name)
+                path = os.path.join(tmp_dir, name)
+                if cookiefile and os.path.abspath(path) == cookiefile:
+                    continue
+                if os.path.isfile(path) and os.path.getsize(path) > 1024:
+                    return path
         except Exception as e:
             last_error = e
-            logger.warning("오디오 다운로드 실패 (시도 %d/3): %s", attempt + 1, e)
+            logger.warning("오디오 다운로드 실패 (시도 %d/3): %s", attempt + 1, e, exc_info=True)
     raise RuntimeError(f"오디오 다운로드 실패: {last_error}")
 
 
@@ -557,6 +573,59 @@ TRANSCRIPT_PROMPT = (
     '5) 테니스 용어를 정확하게 사용 (타점, 팔로우스루, 라켓드롭, 스플릿스텝, 트로피자세, 내전 등).\n'
     '6) 발언이 자연스럽게 이어지도록 정리. 원문 의도 훼손 금지.\n'
     '7) JSON이나 마크다운 없이 텍스트만 출력.'
+)
+
+YOUTUBE_URL_REPORT_PROMPT = (
+    '당신은 테니스 레슨 전문 분석가입니다.\n'
+    '첨부된 YouTube 레슨 영상을 직접 보고/듣고, 여성 코치가 남성 수강생에게 한 '
+    '명확한 테니스 피드백만 추출해 오답노트 JSON을 작성하세요.\n\n'
+    '중요한 구분:\n'
+    '- 코치(여성): 지시·교정·시범·설명을 하는 쪽입니다.\n'
+    '- 수강생(남성): 질문하거나 "네", "아" 등으로 반응하는 쪽입니다.\n'
+    '- 수강생 반응, 공 소리, 진행 카운트, 단순 칭찬, 잡담은 제외하세요.\n\n'
+    '아래 JSON 하나만 출력하세요. 마크다운 펜스나 설명은 금지합니다.\n\n'
+    '{{"card1_problem": "코치가 반복적으로 지적한 핵심 문제 50자 이내", '
+    '"card2_cueing": "코치가 제시한 핵심 이미지/큐잉 50자 이내", '
+    '"card3_action": "다음 연습 때 집중할 구체 행동 60자 이내", '
+    '"full_summary": "레슨 전체 흐름 요약 3~5문단", '
+    '"keywords": ["키워드1", "키워드2", "키워드3"], '
+    '"lesson_type": ["포핸드"], '
+    '"steps": ["① 단계1", "② 단계2", "③ 단계3"], '
+    '"scenarios": [{{"condition": "상황", "action": "대처"}}], '
+    '"timestamps": ['
+    '{{"sec": 123, "type": "교정", "category": "포핸드", "label": "20자 이내 요약", '
+    '"quote": "실제 들린 코치 발언 원문", "problem": "문제 동작", '
+    '"fix": "교정법", "importance": "high", "confidence": 0.85}}'
+    ']}}\n\n'
+    '규칙:\n'
+    '1) 모든 문자열은 한국어.\n'
+    '2) keywords는 정확히 3개.\n'
+    '3) lesson_type은 ["포핸드","백핸드","발리","서브","로브","스텝","풋워크","게임레슨","드롭샷","어프로치"] 중 1~3개.\n'
+    '4) timestamps는 주요 피드백 장면 15~30개. sec는 영상 전체 기준 초 단위 정수.\n'
+    '5) timestamps의 quote는 실제 들린 코치 발언 원문에 가깝게 작성하고, 수강생 발화는 넣지 마세요.\n'
+    '6) 확실하지 않은 장면은 timestamps에 넣지 마세요. confidence는 0.0~1.0.\n'
+    '7) type은 "교정", "드릴", "전술" 중 하나.\n'
+    '8) 단순 진행 신호("시작", "준비", "하나 둘", "다시")만 있는 장면은 제외.\n'
+    '9) 순수 JSON만 출력. 마크다운 펜스 금지.'
+)
+
+YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
+    '당신은 테니스 레슨 전문 분석가입니다.\n'
+    '첨부된 YouTube 레슨 영상 중 {start_label}~{end_label} 구간만 집중해서 보고/듣고, '
+    '여성 코치가 남성 수강생에게 한 명확한 테니스 피드백만 JSON으로 추출하세요.\n\n'
+    '{{"feedbacks": ['
+    '{{"sec": 123, "type": "교정", "category": "포핸드", "label": "20자 이내 요약", '
+    '"quote": "실제 들린 코치 발언 원문", "problem": "문제 동작", '
+    '"fix": "교정법", "importance": "high|medium|low", "confidence": 0.85}}'
+    '], "keywords": ["키워드1", "키워드2", "키워드3"]}}\n\n'
+    '규칙:\n'
+    '1) sec는 영상 전체 기준 초 단위 정수이며 반드시 {start_sec} 이상 {end_sec} 이하.\n'
+    '2) type은 "교정", "드릴", "전술" 중 하나.\n'
+    '3) category는 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
+    '4) 수강생 반응, 공 소리, 카운트, 단순 칭찬, 잡담, 진행 신호만 있는 장면은 제외.\n'
+    '5) quote는 실제 들린 코치 발언 원문에 가깝게 작성. 수강생 발화는 넣지 마세요.\n'
+    '6) 확실한 피드백만 최대 8개. 없으면 feedbacks를 빈 배열 []로 반환.\n'
+    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 
@@ -767,6 +836,180 @@ def generate_lesson_report(
         "scenarios":       _coerce_scenarios(parsed.get("scenarios")),
         "timestamps":      _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
         "gemini_model":    settings.GEMINI_MODEL,
+    }
+
+
+def generate_lesson_report_youtube_url(
+    youtube_url: str,
+    on_progress: Optional[ProgressCallback] = None,
+) -> dict:
+    """Gemini가 public YouTube URL을 직접 읽는 실험 경로.
+
+    yt-dlp 다운로드 없이 YouTube URL을 Gemini의 video URI input으로 전달한다.
+    public YouTube 영상에서만 동작하며, preview 성격의 Gemini 기능에 의존한다.
+    """
+    settings = get_settings()
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    youtube_url = (youtube_url or "").strip()
+    if not youtube_url:
+        raise RuntimeError("youtube_url is empty")
+
+    def _notify(step: int, message: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(step, message)
+        except Exception as e:
+            logger.debug("on_progress error ignored: %s", e)
+
+    from google import genai
+    from google.genai import types
+
+    _notify(1, "🎬 YouTube 영상을 Gemini로 불러오는 중... (1/3)")
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+    duration_sec = _estimate_youtube_duration_sec(youtube_url)
+    if duration_sec <= 0:
+        duration_sec = YOUTUBE_URL_FALLBACK_DURATION_SEC
+    duration_sec = min(duration_sec, YOUTUBE_URL_MAX_DURATION_SEC)
+    total_segments = max(1, (duration_sec + YOUTUBE_URL_SEGMENT_SECONDS - 1) // YOUTUBE_URL_SEGMENT_SECONDS)
+
+    _notify(2, f"🔍 Gemini가 영상을 구간별 분석 중... (2/3) — 0/{total_segments} 구간 완료")
+    logger.info(
+        "[gemini-youtube] YouTube URL 구간 분석 중: %s duration=%ds segments=%d",
+        youtube_url,
+        duration_sec,
+        total_segments,
+    )
+
+    segment_results: List[Dict[str, Any]] = []
+    for idx, start_sec in enumerate(range(0, duration_sec, YOUTUBE_URL_SEGMENT_SECONDS), start=1):
+        end_sec = min(start_sec + YOUTUBE_URL_SEGMENT_SECONDS, duration_sec)
+        result = _analyze_youtube_url_segment(client, types, youtube_url, start_sec, end_sec)
+        if result:
+            segment_results.append(result)
+        _notify(2, f"🔍 Gemini가 영상을 구간별 분석 중... (2/3) — {idx}/{total_segments} 구간 완료")
+
+    if not segment_results:
+        raise RuntimeError("Gemini YouTube URL 구간 분석 결과가 비어 있습니다")
+
+    _notify(3, "📝 오답노트 정리 중... (3/3)")
+    logger.info("[gemini-youtube] 구간 분석 완료: %d/%d", len(segment_results), total_segments)
+    parsed = _merge_chunks(client, segment_results, types)
+
+    return {
+        "card1_problem": str(parsed.get("card1_problem") or "").strip() or None,
+        "card2_cueing":  str(parsed.get("card2_cueing")  or "").strip() or None,
+        "card3_action":  str(parsed.get("card3_action")  or "").strip() or None,
+        "full_summary":  str(parsed.get("full_summary")  or "").strip() or None,
+        "keywords":      _coerce_keywords(parsed.get("keywords")),
+        "lesson_type":   _coerce_lesson_type(parsed.get("lesson_type")),
+        "steps":         _coerce_steps(parsed.get("steps")),
+        "scenarios":     _coerce_scenarios(parsed.get("scenarios")),
+        "timestamps":    _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
+        "gemini_model":  settings.GEMINI_MODEL,
+    }
+
+
+def _format_mmss(sec: int) -> str:
+    return f"{sec // 60:02d}:{sec % 60:02d}"
+
+
+def _estimate_youtube_duration_sec(youtube_url: str) -> int:
+    """Best-effort duration lookup for segment planning.
+
+    Metadata lookup is only used to size Gemini URL segments. If it fails, the
+    caller falls back to a conservative default duration.
+    """
+    try:
+        from app.services import youtube_service
+
+        video_id = youtube_service.extract_video_id(youtube_url)
+        meta = youtube_service.get_video_metadata(video_id)
+        duration = meta.get("duration_sec")
+        if duration:
+            return int(duration)
+    except Exception as e:
+        logger.info("[gemini-youtube] duration lookup skipped: %s", e)
+    return 0
+
+
+def _analyze_youtube_url_segment(
+    client: Any,
+    types: Any,
+    youtube_url: str,
+    start_sec: int,
+    end_sec: int,
+) -> Optional[Dict[str, Any]]:
+    prompt = YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE.format(
+        start_label=_format_mmss(start_sec),
+        end_label=_format_mmss(end_sec),
+        start_sec=start_sec,
+        end_sec=end_sec,
+    )
+    try:
+        response = client.models.generate_content(
+            model=get_settings().GEMINI_MODEL,
+            contents=[
+                types.Part.from_uri(
+                    file_uri=youtube_url,
+                    mime_type="video/*",
+                    media_resolution=types.PartMediaResolutionLevel.MEDIA_RESOLUTION_LOW,
+                ),
+                types.Part.from_text(text=prompt),
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=8192,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        raw = response.text or ""
+        logger.info(
+            "[gemini-youtube] 구간 응답 (%s~%s, 길이=%d): %s",
+            _format_mmss(start_sec),
+            _format_mmss(end_sec),
+            len(raw),
+            raw[:240],
+        )
+        parsed = _parse_json(raw)
+    except Exception as e:
+        logger.warning(
+            "[gemini-youtube] 구간 분석 실패 (%s~%s): %s",
+            _format_mmss(start_sec),
+            _format_mmss(end_sec),
+            e,
+        )
+        return None
+
+    feedbacks = []
+    for fb in parsed.get("feedbacks", []):
+        if not isinstance(fb, dict):
+            continue
+        sec = _coerce_float(fb.get("sec"))
+        if sec is None:
+            continue
+        sec = int(round(_clamp_float(sec, float(start_sec), float(end_sec))))
+
+        confidence = _coerce_float(fb.get("confidence"), 1.0)
+        if confidence is not None and confidence < MIN_FEEDBACK_CONFIDENCE:
+            continue
+
+        fb["sec"] = sec
+        fb["type"] = str(fb.get("type") or "교정").strip()
+        if fb["type"] not in ("교정", "드릴", "전술"):
+            fb["type"] = "교정"
+        fb["importance"] = _normalize_importance(fb.get("importance"))
+        if confidence is not None:
+            fb["confidence"] = round(_clamp_float(confidence, 0.0, 1.0), 2)
+        feedbacks.append(fb)
+
+    return {
+        "offset_sec": start_sec,
+        "feedbacks": feedbacks,
+        "keywords": _coerce_keywords(parsed.get("keywords")),
     }
 
 
