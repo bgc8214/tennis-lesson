@@ -610,15 +610,25 @@ YOUTUBE_URL_REPORT_PROMPT = (
 )
 
 YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
-    '당신은 테니스 레슨 전문 분석가입니다.\n'
-    '첨부된 YouTube 레슨 영상 중 {start_label}~{end_label} 구간만 집중해서 보고/듣고, '
-    '여성 코치가 남성 수강생에게 한 명확한 테니스 피드백만 JSON으로 추출하세요.\n\n'
-    '중요: 영상의 실제 길이가 {start_label}보다 짧아서 이 구간이 아예 존재하지 않을 수 있습니다. '
-    '그런 경우 절대로 내용을 추측하거나 만들어내지 말고, video_ended를 true로 설정하고 '
-    'feedbacks를 빈 배열로 반환하세요.\n\n'
+    '당신은 오디오/영상 전사(transcription) 담당자입니다. 테니스 지식으로 내용을 채우거나 '
+    '"이런 상황이면 코치가 보통 이렇게 말한다"는 추론을 하는 것은 엄격히 금지됩니다.\n\n'
+    '첨부된 YouTube 레슨 영상 중 {start_label}~{end_label} 구간만 실제로 보고/들으세요. '
+    '이 구간에 여성 코치가 남성 수강생에게 한 발언 중, 당신이 단어 단위로 정확하게 알아들은 '
+    '발언만 JSON으로 추출하세요.\n\n'
+    '절대 규칙 — 위반 시 전체 응답이 폐기됩니다:\n'
+    '- quote는 실제로 들은 말을 한 글자도 바꾸지 않고 그대로 옮긴 것이어야 합니다. '
+    '"~라는 취지", "~에 가까운 말", "대략" 같은 재구성/의역/추론은 절대 금지입니다.\n'
+    '- 발화가 흐릿하거나, 숫자 세기("하나 둘 셋"), 이름/호칭 부르기, 짧은 감탄사("어!", "좋아"), '
+    '공 치는 소리, 무의미한 잡음뿐이라면 그 장면은 절대 feedbacks에 넣지 마세요. '
+    '내용을 지어내서 채우지 마세요.\n'
+    '- 이 구간에 명확히 들리는 코치의 교정/드릴/전술 발언이 하나도 없다면, '
+    'feedbacks를 반드시 빈 배열 []로 반환하세요. 빈 배열은 정상적이고 바람직한 응답입니다. '
+    '개수를 채우려고 애쓰지 마세요.\n'
+    '- 영상의 실제 길이가 {start_label}보다 짧아서 이 구간이 아예 존재하지 않을 수 있습니다. '
+    '그런 경우 video_ended를 true로 설정하고 feedbacks를 빈 배열로 반환하세요.\n\n'
     '{{"video_ended": false, "feedbacks": ['
     '{{"sec": 123, "type": "교정", "category": "포핸드", "label": "20자 이내 요약", '
-    '"quote": "실제 들린 코치 발언 원문", "problem": "문제 동작", '
+    '"quote": "실제 들린 코치 발언 원문 그대로", "problem": "문제 동작", '
     '"fix": "교정법", "importance": "high|medium|low", "confidence": 0.85}}'
     '], "keywords": ["키워드1", "키워드2", "키워드3"]}}\n\n'
     '규칙:\n'
@@ -626,11 +636,11 @@ YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
     '2) type은 "교정", "드릴", "전술" 중 하나.\n'
     '3) category는 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
     '4) 수강생 반응, 공 소리, 카운트, 단순 칭찬, 잡담, 진행 신호만 있는 장면은 제외.\n'
-    '5) quote는 실제 들린 코치 발언 원문에 가깝게 작성. 수강생 발화는 넣지 마세요.\n'
-    '6) 확실한 피드백만 최대 8개. 없으면 feedbacks를 빈 배열 []로 반환.\n'
-    '7) 이 구간이 영상 실제 길이를 넘어서면(영상이 이미 끝났으면) video_ended를 true로, '
+    '5) confidence는 "이 발언을 실제로 정확히 들었다고 확신하는 정도"를 뜻합니다. '
+    '조금이라도 추측이 섞였다면 0.65 미만으로 낮추세요(이 경우 자동 제외됩니다).\n'
+    '6) 이 구간이 영상 실제 길이를 넘어서면(영상이 이미 끝났으면) video_ended를 true로, '
     '그렇지 않으면 false로 반환. 불확실하면 false.\n'
-    '8) 순수 JSON만 출력. 마크다운 펜스 금지.'
+    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 
@@ -969,14 +979,14 @@ def _analyze_youtube_url_segment(
                 types.Part.from_uri(
                     file_uri=youtube_url,
                     mime_type="video/*",
-                    media_resolution=types.PartMediaResolutionLevel.MEDIA_RESOLUTION_LOW,
+                    media_resolution=types.PartMediaResolutionLevel.MEDIA_RESOLUTION_MEDIUM,
                 ),
                 types.Part.from_text(text=prompt),
             ],
             config=types.GenerateContentConfig(
-                temperature=0.2,
+                temperature=0.1,
                 max_output_tokens=8192,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
             ),
         )
         raw = response.text or ""
