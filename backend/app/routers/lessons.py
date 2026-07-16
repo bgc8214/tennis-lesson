@@ -203,15 +203,21 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str, analyze_court: bool
 
         # lesson 메타가 비어있다면 보강 (제목 자동 채움) + 카테고리 업데이트
         try:
-            video_id = youtube_service.extract_video_id(youtube_url)
-            meta = youtube_service.get_video_metadata(video_id)
             patch: Dict[str, Any] = {"updated_at": now()}
-            if meta.get("title"):
-                patch["title"] = meta["title"]
-            if meta.get("duration_sec"):
-                patch["duration_sec"] = meta["duration_sec"]
-            if meta.get("thumbnail_url"):
-                patch["thumbnail_url"] = meta["thumbnail_url"]
+            if report.get("video_title"):
+                # gemini-youtube 경로: Gemini가 영상에서 직접 읽은 제목 사용.
+                # duration_sec/thumbnail_url은 레슨 생성 시 이미 yt-dlp로 조회했으므로
+                # (실패했더라도 그때 이미 폴백 썸네일이 저장됨) 여기서 재조회하지 않는다.
+                patch["title"] = report["video_title"]
+            else:
+                video_id = youtube_service.extract_video_id(youtube_url)
+                meta = youtube_service.get_video_metadata(video_id)
+                if meta.get("title"):
+                    patch["title"] = meta["title"]
+                if meta.get("duration_sec"):
+                    patch["duration_sec"] = meta["duration_sec"]
+                if meta.get("thumbnail_url"):
+                    patch["thumbnail_url"] = meta["thumbnail_url"]
             # lesson_type은 메타데이터 조회 성공 여부와 무관하게 갱신
             patch["lesson_type"] = report.get("lesson_type") or []
             sb.table("lessons").update(patch).eq("id", lesson_id).execute()
