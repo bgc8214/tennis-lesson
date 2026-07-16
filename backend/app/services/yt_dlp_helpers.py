@@ -33,6 +33,13 @@ def build_youtube_ydl_opts(
         opts["extractor_args"] = {"youtube": {"player_client": ["web", "mweb"]}}
     opts.setdefault("updatetime", False)
 
+    # web/mweb 클라이언트는 n-sig(서명) 해독에 JS 런타임이 필요하다. 런타임이
+    # 없으면 yt-dlp가 해당 포맷을 통째로 걸러내 "Requested format is not
+    # available" 에러로 이어진다. deno가 기본값이라 node만 있는 환경(로컬,
+    # Cloud Run 컨테이너 모두 POT 서버용으로 node는 이미 설치돼 있음)에서는
+    # 명시적으로 지정해야 한다.
+    opts.setdefault("js_runtimes", {"node": {}})
+
     # 데이터센터 IP 봇 감지 우회: YTDLP_PROXY 설정 시 모든 YouTube 트래픽을
     # 해당 프록시(주로 residential proxy)로 라우팅한다. 오디오 전용 다운로드라
     # 회당 트래픽이 작아(1시간 영상 ≈ 30MB) 프록시 비용 부담이 적다.

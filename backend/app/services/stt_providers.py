@@ -74,7 +74,13 @@ def _transcribe_local(
 ) -> List[SttSegment]:
     """faster-whisper 로컬 전사 (환청 억제 파라미터 적용).
 
-    - vad_filter=True: 무음/공 소리 구간을 모델에 넣지 않아 창작 자체를 차단
+    - vad_filter=False: Silero VAD가 코트 실촬영 오디오(원거리 마이크로 녹음된
+      코치 음성)에서 speech 확률을 0.03~0.29 수준으로만 내는 사고가 반복
+      확인됨 — threshold를 0.05까지 낮춰도 26분 영상에서 26분 39초가
+      무음으로 오판되어 전사 자체가 통째로 비는 결과가 나왔다. ASR 인코더
+      자체는 이 신호에서 실제 코칭 대화를 정확히 인식하므로, 무음 판별은
+      VAD 대신 후단 필터(no_speech_prob/logprob/compression_ratio/반복감지)에
+      전적으로 맡긴다.
     - condition_on_previous_text=False: 이전 환청이 다음 창으로 전파되는 것 차단
     - temperature=0.0: 샘플링 창작 차단
     """
@@ -94,13 +100,7 @@ def _transcribe_local(
         beam_size=5,
         temperature=0.0,
         condition_on_previous_text=False,
-        vad_filter=True,
-        vad_parameters={
-            # 코트에서는 발화 사이 간격이 길다 — 500ms 이상 무음은 잘라낸다.
-            "min_silence_duration_ms": 500,
-            # 발화 경계 잘림 방지 패딩
-            "speech_pad_ms": 400,
-        },
+        vad_filter=False,
         # whisper 기본 임계값 — 세그먼트 지표는 어차피 후단 필터에서 재검사한다.
         no_speech_threshold=0.6,
         log_prob_threshold=-1.0,
