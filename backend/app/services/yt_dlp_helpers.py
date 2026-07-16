@@ -18,9 +18,10 @@ def build_youtube_ydl_opts(
     """Return yt-dlp options with Cloud Run anti-bot support."""
     opts = dict(base_opts)
 
-    # Android/iOS 클라이언트로 봇 감지 우회 — Cloud Run 등 서버 IP에서 필수
+    # bgutil PO Token 프로바이더는 web/mweb 클라이언트에 토큰을 공급한다.
+    # android/ios로 고정하면 PO Token 경로 자체가 적용되지 않으므로 web 계열을 사용한다.
     if "extractor_args" not in opts:
-        opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
+        opts["extractor_args"] = {"youtube": {"player_client": ["web", "mweb"]}}
     opts.setdefault("updatetime", False)
 
     cookies_env = os.environ.get("YT_COOKIES_B64", "")

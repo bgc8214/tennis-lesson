@@ -34,24 +34,20 @@ YOUTUBE_URL_MAX_DURATION_SEC = 3 * 60 * 60
 # ─── 프롬프트 ─────────────────────────────────────────────────────────
 
 CHUNK_PROMPT = (
-    '당신은 테니스 레슨 전문 분석가입니다.\n'
-    '아래는 여성 코치가 남성 수강생에게 1:1 테니스 레슨을 진행하는 오디오 클립입니다.\n\n'
-    '등장인물:\n'
-    '- 코치(여성): 지시·교정·시범·설명을 하는 쪽. 주로 짧고 단호한 말투.\n'
-    '- 수강생(남성): 질문하거나 "네", "아" 등으로 반응하는 쪽.\n\n'
-    '코치가 수강생에게 한 명확한 테니스 피드백만 유형별로 분류하여 JSON으로 출력하세요.\n\n'
-    'feedback으로 인정하는 것:\n'
-    '- 잘못된 동작 지적: "타점이 뒤야", "라켓이 늦어", "몸이 열려"\n'
-    '- 교정 지시: "앞에서 맞춰", "왼손 더 버텨", "라켓 먼저 빼"\n'
-    '- 연습 방법: "크로스 세 개 치고 다운더라인", "하나 치고 두 개 치고"\n'
-    '- 전술 판단: "짧은 공이면 들어와", "서브 후 포지션 잡아"\n\n'
-    'feedback에서 제외하는 것:\n'
-    '- 수강생 대답/추임새: "네", "아", "맞아요", "오케이요"\n'
-    '- 단순 칭찬/진행 멘트: "좋아", "오케이", "그렇지", "하나 더", "다시", "자"\n'
-    '- 카운트만 하는 말, 공 소리, 숨소리, 불명확한 발화\n'
-    '- 단순 시작 신호: "시작", "준비", "하나 둘"만 있는 말\n'
-    '- 레슨과 무관한 주변 대화: 핸드폰, 아이, 잡담 등\n'
-    '- 들리지 않는 내용을 추측한 문장\n\n'
+    '당신은 오디오 전사(transcription) 담당자입니다. 테니스 지식으로 내용을 채우거나 '
+    '"이런 상황이면 코치가 보통 이렇게 말한다"는 추론을 하는 것은 엄격히 금지됩니다.\n\n'
+    '아래는 여성 코치가 남성 수강생에게 1:1 테니스 레슨을 진행하는 오디오 클립입니다.\n'
+    '이 클립에서 코치가 한 발언 중, 당신이 단어 단위로 정확하게 알아들은 발언만 '
+    'JSON으로 추출하세요.\n\n'
+    '절대 규칙 — 위반 시 전체 응답이 폐기됩니다:\n'
+    '- quote는 실제로 들은 말을 한 글자도 바꾸지 않고 그대로 옮긴 것이어야 합니다. '
+    '"~라는 취지", "~에 가까운 말", "대략" 같은 재구성/의역/추론은 절대 금지입니다.\n'
+    '- 발화가 흐릿하거나, 숫자 세기, 이름/호칭 부르기, 짧은 감탄사, 공 치는 소리, '
+    '무의미한 잡음뿐이라면 그 장면은 절대 feedbacks에 넣지 마세요. 내용을 지어내서 '
+    '채우지 마세요.\n'
+    '- 이 클립에 명확히 들리는 코치의 교정/드릴/전술 발언이 하나도 없다면, feedbacks를 '
+    '반드시 빈 배열 []로 반환하세요. 빈 배열은 정상적이고 바람직한 응답입니다. 개수를 '
+    '채우려고 애쓰지 마세요.\n\n'
     '{"feedbacks": ['
     '{'
     '"local_start_sec": 0.0, "local_end_sec": 0.0, '
@@ -62,24 +58,20 @@ CHUNK_PROMPT = (
     '}'
     '], "keywords": ["단어1", "단어2"]}\n\n'
     '규칙:\n'
-    'type 분류:\n'
-    '  - "교정": 수강생의 잘못된 동작을 지적하거나 교정하는 발언 (예: "타점이 뒤야", "라켓 면 닫아")\n'
-    '  - "드릴": 특정 연습 방법·순서를 지시하는 발언 (예: "하나 치고 두 개 치고 스트레이트로", "크로스 세 개 다음에 다운더라인")\n'
-    '  - "전술": 경기 상황 판단·배치·전략을 설명하는 발언 (예: "짧은 공 오면 네트로 들어와", "서브 후 포지션")\n'
+    'type: "교정"(잘못된 동작 지적/교정), "드릴"(연습 방법·순서), "전술"(경기 상황 판단) 중 하나.\n'
     'category: 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
     'local_start_sec: 이 클립 안에서 해당 코치 발언이 시작된 대략 초. 0 이상 클립 길이 이하 숫자.\n'
     'local_end_sec: 이 클립 안에서 해당 코치 발언이 끝난 대략 초. 모르면 local_start_sec와 같게.\n'
     'label: 발언 내용 핵심 20자 이내.\n'
-    'quote: 실제 들린 코치 발언 원문 그대로. 요약 금지. 수강생 발화 혼입 금지.\n'
+    'quote: 실제 들린 코치 발언 원문 그대로. 요약/의역 금지. 수강생 발화 혼입 금지.\n'
     'problem: 코치가 지적한 문제 동작. 명확하지 않으면 빈 문자열.\n'
     'fix: 교정법 또는 드릴·전술 내용. 오디오에서 언급된 것만.\n'
     'importance: 레슨 복기에 중요한 핵심 피드백이면 high, 일반 지시면 medium, 보조적이면 low.\n'
-    'confidence: 0.0~1.0. 발화자/내용/시간이 모두 확실할수록 높게.\n'
+    'confidence: "이 발언을 실제로 정확히 들었다고 확신하는 정도". 조금이라도 추측이 '
+    '섞였다면 0.65 미만으로 낮추세요(이 경우 자동 제외됩니다).\n'
     '테니스 용어 참고: 타점·팔로우스루·내전·라켓드롭·토스·발리·스플릿스텝·풋워크·크로스·다운더라인.\n'
-    '중요: "시작", "준비", "세 개", "하나 둘"처럼 드릴 진행 신호만 있으면 feedbacks에 넣지 말 것.\n'
-    '중요: confidence가 0.65 미만이면 feedbacks에 넣지 말 것.\n'
-    '중요: 코치의 명확한 발언이 들리지 않으면 feedbacks를 반드시 빈 배열 []로 반환할 것.\n'
-    '추측하거나 공 소리·배경 소음만 있는 구간은 절대 feedbacks에 넣지 말 것.\n'
+    '수강생 대답/추임새("네","아","맞아요"), 단순 칭찬/진행 멘트("좋아","오케이","그렇지","자"), '
+    '카운트만 하는 말, 단순 시작 신호("시작","준비","하나 둘")는 제외.\n'
     'feedbacks는 최대 5개. 교정·드릴·전술 모두 포함. 순수 JSON만, 펜스 금지.'
 )
 
@@ -508,9 +500,9 @@ def _analyze_chunk(client: Any, chunk: Dict, types: Any) -> Optional[Dict]:
                 types.Part(text=chunk_prompt),
             ],
             config=types.GenerateContentConfig(
-                temperature=0.3,
+                temperature=0.1,
                 max_output_tokens=65536,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
             ),
         )
         raw = response.text or ""
@@ -609,6 +601,11 @@ YOUTUBE_URL_REPORT_PROMPT = (
     '9) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
+# 영상 실제 길이를 알 때 쓰는 프롬프트. video_ended 필드를 아예 요구하지 않는다 —
+# 이 필드를 판단하게 하면 모델이 발화가 뜸하거나 잡음이 많은 구간을 "영상이
+# 끝났다"로 오판하고, 그 구간에 실제 존재하는 피드백까지 통째로 비우는 사고가
+# 반복 확인됨(실제 오디오 STT 대조로 검증). duration을 알면 어차피 range()가
+# 존재하는 구간까지만 순회하므로 이 필드가 필요 없다.
 YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
     '당신은 오디오/영상 전사(transcription) 담당자입니다. 테니스 지식으로 내용을 채우거나 '
     '"이런 상황이면 코치가 보통 이렇게 말한다"는 추론을 하는 것은 엄격히 금지됩니다.\n\n'
@@ -623,9 +620,46 @@ YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
     '내용을 지어내서 채우지 마세요.\n'
     '- 이 구간에 명확히 들리는 코치의 교정/드릴/전술 발언이 하나도 없다면, '
     'feedbacks를 반드시 빈 배열 []로 반환하세요. 빈 배열은 정상적이고 바람직한 응답입니다. '
-    '개수를 채우려고 애쓰지 마세요.\n'
+    '개수를 채우려고 애쓰지 마세요. 잡음이 많거나 알아듣기 어렵다는 것이 "코치 발언이 없다"는 '
+    '뜻은 아닙니다 — 잡음 속에서도 명확히 들리는 발언이 있으면 반드시 포함하세요. '
+    '이 구간은 영상 실제 재생 구간이 확정되어 있으니, "영상이 끝났는지"는 판단하지 마세요.\n\n'
+    '{{"feedbacks": ['
+    '{{"sec": 123, "type": "교정", "category": "포핸드", "label": "20자 이내 요약", '
+    '"quote": "실제 들린 코치 발언 원문 그대로", "problem": "문제 동작", '
+    '"fix": "교정법", "importance": "high|medium|low", "confidence": 0.85}}'
+    '], "keywords": ["키워드1", "키워드2", "키워드3"]}}\n\n'
+    '규칙:\n'
+    '1) sec는 영상 전체 기준 초 단위 정수이며 반드시 {start_sec} 이상 {end_sec} 이하.\n'
+    '2) type은 "교정", "드릴", "전술" 중 하나.\n'
+    '3) category는 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
+    '4) 수강생 반응, 공 소리, 카운트, 단순 칭찬, 잡담, 진행 신호만 있는 장면은 제외.\n'
+    '5) confidence는 "이 발언을 실제로 정확히 들었다고 확신하는 정도"를 뜻합니다. '
+    '조금이라도 추측이 섞였다면 0.65 미만으로 낮추세요(이 경우 자동 제외됩니다).\n'
+    '6) 순수 JSON만 출력. 마크다운 펜스 금지.'
+)
+
+# 영상 길이를 모를 때(fallback 추정 75분 사용 중)만 video_ended로 조기 중단
+# 신호를 받는다 — 이때는 fallback이 실제보다 길 위험이 있어 존재하지 않는
+# 구간을 지어낼 위험이 이 필드를 두는 것보다 더 크기 때문.
+YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE_UNKNOWN_DURATION = (
+    '당신은 오디오/영상 전사(transcription) 담당자입니다. 테니스 지식으로 내용을 채우거나 '
+    '"이런 상황이면 코치가 보통 이렇게 말한다"는 추론을 하는 것은 엄격히 금지됩니다.\n\n'
+    '첨부된 YouTube 레슨 영상 중 {start_label}~{end_label} 구간만 실제로 보고/들으세요. '
+    '이 구간에 여성 코치가 남성 수강생에게 한 발언 중, 당신이 단어 단위로 정확하게 알아들은 '
+    '발언만 JSON으로 추출하세요.\n\n'
+    '절대 규칙 — 위반 시 전체 응답이 폐기됩니다:\n'
+    '- quote는 실제로 들은 말을 한 글자도 바꾸지 않고 그대로 옮긴 것이어야 합니다. '
+    '"~라는 취지", "~에 가까운 말", "대략" 같은 재구성/의역/추론은 절대 금지입니다.\n'
+    '- 발화가 흐릿하거나, 숫자 세기("하나 둘 셋"), 이름/호칭 부르기, 짧은 감탄사("어!", "좋아"), '
+    '공 치는 소리, 무의미한 잡음뿐이라면 그 장면은 절대 feedbacks에 넣지 마세요. '
+    '내용을 지어내서 채우지 마세요.\n'
+    '- 이 구간에 명확히 들리는 코치의 교정/드릴/전술 발언이 하나도 없다면, '
+    'feedbacks를 반드시 빈 배열 []로 반환하세요. 빈 배열은 정상적이고 바람직한 응답입니다. '
+    '개수를 채우려고 애쓰지 마세요. 잡음이 많거나 알아듣기 어렵다는 것이 "코치 발언이 없다"는 '
+    '뜻은 아닙니다 — 잡음 속에서도 명확히 들리는 발언이 있으면 반드시 포함하세요.\n'
     '- 영상의 실제 길이가 {start_label}보다 짧아서 이 구간이 아예 존재하지 않을 수 있습니다. '
-    '그런 경우 video_ended를 true로 설정하고 feedbacks를 빈 배열로 반환하세요.\n\n'
+    '그런 경우에만 video_ended를 true로 설정하고 feedbacks를 빈 배열로 반환하세요. '
+    '단순히 발화가 적거나 잡음이 많다는 이유로 video_ended를 true로 하면 안 됩니다.\n\n'
     '{{"video_ended": false, "feedbacks": ['
     '{{"sec": 123, "type": "교정", "category": "포핸드", "label": "20자 이내 요약", '
     '"quote": "실제 들린 코치 발언 원문 그대로", "problem": "문제 동작", '
@@ -638,8 +672,8 @@ YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE = (
     '4) 수강생 반응, 공 소리, 카운트, 단순 칭찬, 잡담, 진행 신호만 있는 장면은 제외.\n'
     '5) confidence는 "이 발언을 실제로 정확히 들었다고 확신하는 정도"를 뜻합니다. '
     '조금이라도 추측이 섞였다면 0.65 미만으로 낮추세요(이 경우 자동 제외됩니다).\n'
-    '6) 이 구간이 영상 실제 길이를 넘어서면(영상이 이미 끝났으면) video_ended를 true로, '
-    '그렇지 않으면 false로 반환. 불확실하면 false.\n'
+    '6) video_ended는 "이 구간이 영상 실제 길이를 벗어나 존재하지 않음"을 뜻합니다. '
+    '발화가 적다는 이유로 true로 하지 마세요. 불확실하면 false.\n'
     '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
@@ -885,9 +919,11 @@ def generate_lesson_report_youtube_url(
     _notify(1, "🎬 YouTube 영상을 Gemini로 불러오는 중... (1/3)")
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
-    duration_sec = _estimate_youtube_duration_sec(youtube_url)
-    if duration_sec <= 0:
-        duration_sec = YOUTUBE_URL_FALLBACK_DURATION_SEC
+    video_title = _get_youtube_title_via_gemini(client, types, youtube_url)
+
+    estimated_duration_sec = _estimate_youtube_duration_sec(youtube_url)
+    duration_is_known = estimated_duration_sec > 0
+    duration_sec = estimated_duration_sec if duration_is_known else YOUTUBE_URL_FALLBACK_DURATION_SEC
     duration_sec = min(duration_sec, YOUTUBE_URL_MAX_DURATION_SEC)
     total_segments = max(1, (duration_sec + YOUTUBE_URL_SEGMENT_SECONDS - 1) // YOUTUBE_URL_SEGMENT_SECONDS)
 
@@ -902,15 +938,24 @@ def generate_lesson_report_youtube_url(
     segment_results: List[Dict[str, Any]] = []
     for idx, start_sec in enumerate(range(0, duration_sec, YOUTUBE_URL_SEGMENT_SECONDS), start=1):
         end_sec = min(start_sec + YOUTUBE_URL_SEGMENT_SECONDS, duration_sec)
-        result = _analyze_youtube_url_segment(client, types, youtube_url, start_sec, end_sec)
+        result = _analyze_youtube_url_segment(
+            client, types, youtube_url, start_sec, end_sec,
+            duration_is_known=duration_is_known,
+        )
         if result:
             segment_results.append(result)
         _notify(2, f"🔍 Gemini가 영상을 구간별 분석 중... (2/3) — {idx}/{total_segments} 구간 완료")
-        # duration 추정이 부정확해 영상 실제 길이를 넘겼다고 모델이 보고하면
-        # 이후 구간은 존재하지 않는 내용을 지어낼 위험이 있으므로 즉시 중단.
-        if result and result.get("video_ended"):
+        # duration_sec를 실제로 알고 있으면(메타데이터 조회 성공) 그 값이 근거가
+        # 확실하므로 range()가 이미 정확한 구간까지만 순회한다 — 모델의 video_ended
+        # 자기보고는 무시한다. 한 구간에 발화가 뜸했을 뿐인데 모델이 "영상이
+        # 끝났다"고 착각해 그 이후 구간을 통째로 스킵하는 사고가 실제로 발생했음
+        # (59분 영상, 10분 지점에서 video_ended=true 오판 → 이후 49분 누락).
+        # duration을 모를 때(fallback 75분 추정)만 모델의 판단을 신뢰해 중단한다 —
+        # 이 경우엔 fallback이 실제보다 길 위험이 있어 존재하지 않는 구간을
+        # 지어낼 위험이 더 크기 때문.
+        if not duration_is_known and result and result.get("video_ended"):
             logger.info(
-                "[gemini-youtube] 영상 종료 감지 (offset=%ds) — 이후 구간 분석 중단",
+                "[gemini-youtube] 영상 종료 감지 (offset=%ds, fallback 추정 사용 중) — 이후 구간 분석 중단",
                 start_sec,
             )
             break
@@ -933,7 +978,35 @@ def generate_lesson_report_youtube_url(
         "scenarios":     _coerce_scenarios(parsed.get("scenarios")),
         "timestamps":    _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
         "gemini_model":  settings.GEMINI_MODEL,
+        "video_title":   video_title,
     }
+
+
+def _get_youtube_title_via_gemini(client: Any, types: Any, youtube_url: str) -> Optional[str]:
+    """Gemini가 이미 로드한 YouTube 영상에서 실제 제목을 직접 읽어 반환한다.
+
+    yt-dlp 메타 조회가 막혀도(예: 봇 차단) Gemini 경로에서는 제목을 얻을 수 있게
+    별도의 경량 호출로 분리했다. 실패 시 None을 반환해 호출부가 yt-dlp로 폴백한다.
+    """
+    prompt = (
+        '첨부된 YouTube 영상의 실제 제목을 그대로 알려주세요. '
+        '{"title": "영상 제목"} 형식의 순수 JSON만 출력하세요. 마크다운 펜스 금지.'
+    )
+    try:
+        response = client.models.generate_content(
+            model=get_settings().GEMINI_MODEL,
+            contents=[
+                types.Part.from_uri(file_uri=youtube_url, mime_type="video/*"),
+                types.Part.from_text(text=prompt),
+            ],
+            config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=256),
+        )
+        parsed = _parse_json(response.text or "")
+        title = str(parsed.get("title") or "").strip()
+        return title or None
+    except Exception as e:
+        logger.info("[gemini-youtube] title lookup skipped: %s", e)
+        return None
 
 
 def _format_mmss(sec: int) -> str:
@@ -965,8 +1038,14 @@ def _analyze_youtube_url_segment(
     youtube_url: str,
     start_sec: int,
     end_sec: int,
+    duration_is_known: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    prompt = YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE.format(
+    template = (
+        YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE
+        if duration_is_known
+        else YOUTUBE_URL_SEGMENT_PROMPT_TEMPLATE_UNKNOWN_DURATION
+    )
+    prompt = template.format(
         start_label=_format_mmss(start_sec),
         end_label=_format_mmss(end_sec),
         start_sec=start_sec,
@@ -1007,7 +1086,9 @@ def _analyze_youtube_url_segment(
         )
         return None
 
-    video_ended = bool(parsed.get("video_ended"))
+    # duration을 실제로 알 때는 이 구간이 range() 상 존재가 확정된 구간이므로
+    # 모델의 video_ended 자기보고로 정상 피드백을 폐기하지 않는다.
+    video_ended = bool(parsed.get("video_ended")) and not duration_is_known
 
     feedbacks = []
     for fb in ([] if video_ended else parsed.get("feedbacks", [])):
