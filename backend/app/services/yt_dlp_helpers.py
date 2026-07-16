@@ -9,6 +9,15 @@ import shutil
 from typing import Any, Dict
 
 
+def _redact_proxy(proxy_url: str) -> str:
+    """로그용 프록시 URL — 자격증명(user:pass) 마스킹."""
+    if "@" in proxy_url:
+        scheme_sep = proxy_url.find("://")
+        prefix = proxy_url[: scheme_sep + 3] if scheme_sep != -1 else ""
+        return prefix + "***@" + proxy_url.rsplit("@", 1)[1]
+    return proxy_url
+
+
 def build_youtube_ydl_opts(
     base_opts: Dict[str, Any],
     *,
@@ -23,6 +32,16 @@ def build_youtube_ydl_opts(
     if "extractor_args" not in opts:
         opts["extractor_args"] = {"youtube": {"player_client": ["web", "mweb"]}}
     opts.setdefault("updatetime", False)
+
+    # 데이터센터 IP 봇 감지 우회: YTDLP_PROXY 설정 시 모든 YouTube 트래픽을
+    # 해당 프록시(주로 residential proxy)로 라우팅한다. 오디오 전용 다운로드라
+    # 회당 트래픽이 작아(1시간 영상 ≈ 30MB) 프록시 비용 부담이 적다.
+    from app.config import get_settings
+
+    proxy = (get_settings().YTDLP_PROXY or "").strip()
+    if proxy:
+        opts.setdefault("proxy", proxy)
+        logger.info("yt-dlp 프록시 사용: %s", _redact_proxy(proxy))
 
     cookies_env = os.environ.get("YT_COOKIES_B64", "")
     if cookies_env:

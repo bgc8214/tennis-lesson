@@ -351,7 +351,7 @@ def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
         if ts_type not in ("교정", "드릴", "전술"):
             ts_type = "교정"
         confidence = _coerce_float(item.get("confidence"))
-        out.append({
+        coerced = {
             "sec": sec,
             "type": ts_type,
             "category": str(item.get("category", "")).strip() or None,
@@ -361,7 +361,12 @@ def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
             "fix": str(item.get("fix", "")).strip() or None,
             "importance": _normalize_importance(item.get("importance")),
             "confidence": round(_clamp_float(confidence, 0.0, 1.0), 2) if confidence is not None else None,
-        })
+        }
+        # 검증기 통과 메타 (whisper 검증 경로에서만 존재)
+        match_score = _coerce_float(item.get("match_score"))
+        if match_score is not None:
+            coerced["match_score"] = round(_clamp_float(match_score, 0.0, 1.0), 3)
+        out.append(coerced)
     return out
 
 
@@ -1120,30 +1125,54 @@ def _analyze_youtube_url_segment(
     }
 
 
-# ─── Whisper 경로 (TRANSCRIPT_ENGINE=whisper) ──────────────────────────
+# ─── Whisper 검증 경로 (TRANSCRIPT_ENGINE=whisper | whisper-verified) ──
+#
+# 설계 원칙: "LLM이 오디오를 듣고 판단"하는 구조를 버리고,
+#   신뢰 가능한 STT 전사 → LLM은 전사 텍스트의 구조화만 → 코드 레벨 인용 검증
+# 3단으로 분리한다. LLM이 전사에 없는 내용을 지어내면 verification 게이트에서
+# timestamps/card가 자동 폐기되므로 할루시네이션이 최종 리포트에 도달할 수 없다.
 
-WHISPER_TRANSCRIPT_PROMPT = (
-    '당신은 테니스 레슨 분석 전문가입니다.\n\n'
-    '아래는 테니스 레슨 영상을 Whisper STT로 전사한 스크립트입니다.\n'
+WHISPER_VERIFIED_PROMPT = (
+    '당신은 테니스 레슨 전사 스크립트를 구조화하는 담당자입니다.\n'
+    '테니스 지식으로 내용을 보충하거나 "코치가 보통 이렇게 말한다"는 추론은 엄격히 금지됩니다.\n\n'
+    '아래는 여성 코치가 남성 수강생에게 진행한 1:1 테니스 레슨의 STT 전사 스크립트입니다.\n'
     '각 줄은 "[시작초~종료초] 발화 내용" 형식입니다.\n\n'
-    '{transcript}\n\n'
-    '{{"card1_problem": "코치가 반복적으로 지적한 핵심 문제(고질병) 1~2문장", '
+    '===== 전사 스크립트 시작 =====\n'
+    '{transcript}\n'
+    '===== 전사 스크립트 끝 =====\n\n'
+    '절대 규칙 — 위반 항목은 자동 검증기에서 폐기됩니다:\n'
+    '- 전사 스크립트에 없는 내용은 한 글자도 쓰지 마세요.\n'
+    '- 모든 quote와 evidence는 위 스크립트의 발화 내용에서 연속된 구간을 '
+    '한 글자도 바꾸지 않고 그대로 복사한 것이어야 합니다. 요약/의역/재구성 금지.\n'
+    '- 각 timestamps 항목의 sec는 그 quote가 포함된 줄의 시작초를 그대로 사용하세요. 추정 금지.\n'
+    '- 근거가 되는 발화를 스크립트에서 찾을 수 없는 카드는 값을 null로 두세요.\n\n'
+    '아래 형식의 JSON 하나만 출력하세요:\n'
+    '{{"card1_problem": "코치가 반복 지적한 핵심 문제 1~2문장", '
+    '"card1_evidence": "card1의 근거가 된 스크립트 원문 인용", '
     '"card2_cueing": "코치가 제시한 핵심 이미지/큐잉 1~2문장", '
+    '"card2_evidence": "card2의 근거가 된 스크립트 원문 인용", '
     '"card3_action": "다음 연습 때 집중할 구체 행동 1~2문장", '
-    '"full_summary": "레슨 전체 흐름 요약 3~5문단", '
+    '"card3_evidence": "card3의 근거가 된 스크립트 원문 인용", '
+    '"full_summary": "레슨 전체 흐름 요약 3~5문단 (스크립트 내용만 사용)", '
     '"keywords": ["키워드1", "키워드2", "키워드3"], '
     '"lesson_type": ["포핸드"], '
     '"steps": ["① 단계1", "② 단계2"], '
     '"scenarios": [{{"condition": "상황", "action": "대처"}}], '
-    '"timestamps": [{{"sec": 정수, "category": "포핸드", "label": "문제 요약", "quote": "코치 발언 원문", "fix": "교정 방법"}}]}}\n\n'
+    '"timestamps": [{{"sec": 정수, "type": "교정", "category": "포핸드", '
+    '"label": "20자 이내 요약", "quote": "스크립트 원문 그대로 인용", '
+    '"problem": "코치가 지적한 문제", "fix": "교정법", "importance": "high"}}]}}\n\n'
     '규칙:\n'
     '1) 모든 문자열은 한국어.\n'
-    '2) keywords는 정확히 3개.\n'
-    '3) timestamps: 주요 피드백 장면 15~20개. sec은 스크립트의 시작초 그대로 사용 (추정 금지).\n'
-    '4) lesson_type: ["포핸드","백핸드","발리","서브","로브","스텝","풋워크","게임레슨","드롭샷","어프로치"] 중 1~3개.\n'
-    '5) steps: 코치가 알려준 기술 동작 ①②③ 순서로 3~6개. 없으면 [].\n'
-    '6) scenarios: 상황별 대처법. 없으면 [].\n'
-    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
+    '2) keywords는 정확히 3개. 스크립트에 실제로 등장한 단어만.\n'
+    '3) timestamps: 코치의 핵심 교정/드릴/전술 피드백 장면 15~30개. '
+    '수강생 반응, 카운트, 단순 칭찬/진행 멘트("좋아","오케이","자")는 제외.\n'
+    '4) type은 "교정", "드릴", "전술" 중 하나. importance는 high|medium|low.\n'
+    '5) lesson_type: ["포핸드","백핸드","발리","서브","로브","스텝","풋워크",'
+    '"게임레슨","드롭샷","어프로치"] 중 1~3개.\n'
+    '6) steps: 코치가 알려준 기술 동작 ①②③ 순서로 3~6개. 스크립트에 없으면 [].\n'
+    '7) scenarios: 코치가 언급한 상황별 대처법. 스크립트에 없으면 [].\n'
+    '8) problem/fix도 스크립트에서 언급된 것만. 명확하지 않으면 빈 문자열.\n'
+    '9) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 
@@ -1151,10 +1180,17 @@ def generate_lesson_report_whisper(
     youtube_url: str,
     on_progress: Optional[ProgressCallback] = None,
 ) -> dict:
-    """Whisper STT 경로: 로컬 전사 후 텍스트로 Gemini 분석.
+    """Grounded 파이프라인: STT 전사 → Gemini 구조화 → 코드 레벨 인용 검증.
 
-    타임스탬프 정확도가 높지만 전사 시간이 더 걸린다.
+    1) yt-dlp 오디오 다운로드
+    2) STT_PROVIDER(local faster-whisper | groq)로 전사 + 환청 필터
+    3) 전사 텍스트만 Gemini에 전달해 리포트 JSON 생성 (temperature=0.0)
+    4) verification: 모든 quote/evidence를 전사 원문과 fuzzy match,
+       미매칭 timestamp 폐기 / 미매칭 card 폐기(null) / sec 재계산
     """
+    from app.services import stt_providers, verification
+    from app.services.stt_filters import segments_to_transcript_text
+
     settings = get_settings()
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -1179,52 +1215,59 @@ def generate_lesson_report_whisper(
         duration = _get_duration(audio_path)
         logger.info("[whisper] 오디오 길이: %.0f초", duration)
 
-        # 2) Whisper 전사
+        # 2) STT 전사 (환청 필터 포함)
         _notify(2, "🎙️ 음성 인식 중... (2/3) — 시간이 걸릴 수 있습니다")
-        logger.info("[whisper] faster-whisper 전사 시작...")
-        from faster_whisper import WhisperModel
-        model = WhisperModel(
-            settings.WHISPER_MODEL_SIZE,
-            device=settings.WHISPER_DEVICE,
-            compute_type="int8",
+        segments, stt_stats = stt_providers.transcribe_audio(
+            audio_path,
+            on_progress=lambda msg: _notify(2, f"🎙️ {msg} (2/3)"),
         )
-        segments, _ = model.transcribe(audio_path, language="ko", beam_size=5)
+        if not segments:
+            raise RuntimeError("전사 결과가 비어 있습니다 (발화 없음 또는 전부 환청 필터링됨)")
 
-        lines = []
-        for seg in segments:
-            lines.append(f"[{seg.start:.1f}~{seg.end:.1f}초] {seg.text.strip()}")
-        transcript_text = "\n".join(lines)
-        logger.info("[whisper] 전사 완료: %d 세그먼트", len(lines))
-
-        # 3) Gemini로 분석
-        _notify(3, "📝 오답노트 정리 중... (3/3)")
-        logger.info("[whisper] Gemini 분석 중...")
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
-        prompt = WHISPER_TRANSCRIPT_PROMPT.format(transcript=transcript_text)
-        response = client.models.generate_content(
-            model=settings.GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                max_output_tokens=8192,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
+        transcript_text = segments_to_transcript_text(segments)
+        logger.info(
+            "[whisper] 전사 완료: %d 세그먼트 (provider=%s)",
+            len(segments), stt_stats.get("provider"),
         )
-        parsed = _parse_json(response.text or "")
+
+    # 3) Gemini 구조화 — 전사 텍스트만 전달, temperature 0.0
+    _notify(3, "📝 오답노트 정리 중... (3/3)")
+    logger.info("[whisper] Gemini 구조화 중...")
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+    prompt = WHISPER_VERIFIED_PROMPT.format(transcript=transcript_text)
+    response = client.models.generate_content(
+        model=settings.GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            max_output_tokens=16384,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    parsed = _parse_json(response.text or "")
+
+    # 4) 코드 레벨 인용 검증 — 전사에 없는 quote/card 자동 폐기, sec 재계산
+    verified, verify_stats = verification.verify_report(
+        parsed, segments, threshold=settings.VERIFY_MATCH_THRESHOLD
+    )
+    logger.info("[whisper] 검증 통계: %s", verify_stats)
 
     return {
-        "card1_problem": str(parsed.get("card1_problem") or "").strip() or None,
-        "card2_cueing":  str(parsed.get("card2_cueing")  or "").strip() or None,
-        "card3_action":  str(parsed.get("card3_action")  or "").strip() or None,
-        "full_summary":  str(parsed.get("full_summary")  or "").strip() or None,
-        "keywords":      _coerce_keywords(parsed.get("keywords")),
-        "lesson_type":   _coerce_lesson_type(parsed.get("lesson_type")),
-        "steps":         _coerce_steps(parsed.get("steps")),
-        "scenarios":     _coerce_scenarios(parsed.get("scenarios")),
-        "timestamps":    _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
+        "card1_problem": str(verified.get("card1_problem") or "").strip() or None,
+        "card2_cueing":  str(verified.get("card2_cueing")  or "").strip() or None,
+        "card3_action":  str(verified.get("card3_action")  or "").strip() or None,
+        "full_summary":  str(verified.get("full_summary")  or "").strip() or None,
+        "keywords":      _coerce_keywords(verified.get("keywords")),
+        "lesson_type":   _coerce_lesson_type(verified.get("lesson_type")),
+        "steps":         _coerce_steps(verified.get("steps")),
+        "scenarios":     _coerce_scenarios(verified.get("scenarios")),
+        "timestamps":    _compact_timestamps(_coerce_timestamps(verified.get("timestamps"))),
         "gemini_model":  settings.GEMINI_MODEL,
         "transcript_text": transcript_text,
+        # 신규 메타 (기존 응답 shape에 additive — DB 저장은 라우터에서 선택)
+        "stt_stats": stt_stats,
+        "verification": verify_stats,
     }
