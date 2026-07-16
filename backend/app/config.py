@@ -41,17 +41,32 @@ class Settings(BaseSettings):
     WHISPER_DEVICE: str = "cpu"
     WHISPER_LANGUAGE: str = "ko"
 
+    # === STT 프로바이더 ===
+    # local: faster-whisper 로컬 추론 (무료, CPU에서 느림)
+    # groq : Groq 호스티드 whisper-large-v3-turbo ($0.04/오디오시간, 무료 티어 있음)
+    STT_PROVIDER: str = "local"
+    GROQ_API_KEY: str = ""
+    GROQ_STT_MODEL: str = "whisper-large-v3-turbo"
+
+    # === 인용 검증 (할루시네이션 게이트) ===
+    # LLM 인용 vs 전사 원문 fuzzy match 통과 임계값 (정규화 텍스트 기준)
+    VERIFY_MATCH_THRESHOLD: float = 0.75
+
     # === yt-dlp ===
     YTDLP_FORMAT: str = "bestaudio/best"
     YTDLP_MAX_DURATION_SEC: int = 5400
+    # Cloud Run 등 데이터센터 IP에서 YouTube 봇 감지 우회용 프록시 URL.
+    # 예: http://user:pass@gate.example-residential-proxy.com:7777
+    YTDLP_PROXY: str = ""
 
     # === 분석 파이프라인 ===
     ANALYZE_TIMEOUT_SEC: int = 600
     TRANSCRIPT_PREFERRED_LANGUAGES: str = "ko,ko-KR,en"
-    # gemini: 오디오 직접 업로드 (빠름, 타임스탬프 오차 ±30초)
-    # gemini-youtube: Gemini에 public YouTube URL 직접 전달 (yt-dlp 미사용, preview 기능)
-    # whisper: 로컬 STT 후 텍스트 전달 (느림, 타임스탬프 오차 ±3초)
-    TRANSCRIPT_ENGINE: str = "gemini"
+    # whisper: STT 전사 → Gemini는 구조화만 → 코드 레벨 인용 검증 (기본, 할루시네이션 최소)
+    #          ("whisper-verified"도 동일 경로의 별칭)
+    # gemini: 오디오 직접 업로드 후 Gemini가 청크별 전사+추출 (폴백)
+    # gemini-youtube: Gemini에 public YouTube URL 직접 전달 (yt-dlp 미사용, 할루시네이션 큼)
+    TRANSCRIPT_ENGINE: str = "whisper"
 
     # === Court Analysis (Phase 2) ===
     COURT_ANALYSIS_ENABLED: bool = False  # 기본값 False (점진적 롤아웃)

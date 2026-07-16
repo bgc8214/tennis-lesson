@@ -140,13 +140,17 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str, analyze_court: bool
 
     try:
         engine = settings.TRANSCRIPT_ENGINE
-        if engine == "whisper":
+        if engine in ("whisper", "whisper-verified"):
+            # 기본 경로: STT 전사 → Gemini 구조화 → 코드 레벨 인용 검증 (할루시네이션 최소)
             _update_progress(sb, lesson_id, 0, "🎵 오디오 다운로드 중... (1/3)", now)
-            logger.info("[%s] TRANSCRIPT_ENGINE=whisper 경로 사용", lesson_id)
+            logger.info("[%s] TRANSCRIPT_ENGINE=%s (whisper 검증 경로) 사용", lesson_id, engine)
             report = gemini_service.generate_lesson_report_whisper(
                 youtube_url,
                 on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
             )
+            transcript_source = "WHISPER_STT"
+            if report.get("verification"):
+                logger.info("[%s] 인용 검증 통계: %s", lesson_id, report["verification"])
         elif engine == "gemini-youtube":
             _update_progress(sb, lesson_id, 0, "🎬 YouTube 영상을 Gemini로 불러오는 중... (1/3)", now)
             logger.info("[%s] TRANSCRIPT_ENGINE=gemini-youtube 경로 사용", lesson_id)

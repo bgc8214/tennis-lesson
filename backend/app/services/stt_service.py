@@ -1,7 +1,7 @@
-"""faster-whisper 기반 STT 서비스.
+"""STT 서비스 (레거시 진입점).
 
-자막이 없을 때만 사용된다. yt-dlp로 오디오만 다운로드하고
-faster-whisper로 한국어 텍스트로 변환한다.
+실제 전사는 stt_providers(STT_PROVIDER: local | groq)에 위임한다.
+환청(hallucination) 필터가 적용된 세그먼트만 반환된다.
 """
 
 from __future__ import annotations
@@ -9,45 +9,39 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from functools import lru_cache
-from typing import Any
 
 from app.config import get_settings
+from app.services.stt_filters import segments_to_transcript_text
+from app.services.yt_dlp_helpers import build_youtube_ydl_opts
 
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
-def _load_model() -> Any:
-    from faster_whisper import WhisperModel
-    settings = get_settings()
-    model_size = settings.WHISPER_MODEL_SIZE or "base"
-    logger.info("Loading faster-whisper model: %s", model_size)
-    # cpu + int8 — 가장 가볍고 안정적
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    return model
-
-
 def _download_audio(url: str, tmp_dir: str) -> str:
     import yt_dlp
+
     settings = get_settings()
     out_template = os.path.join(tmp_dir, "audio.%(ext)s")
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": out_template,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "64",
-        }],
-        "match_filter": yt_dlp.utils.match_filter_func(
-            f"duration <=? {settings.YTDLP_MAX_DURATION_SEC}"
-        ),
-    }
+    ydl_opts = build_youtube_ydl_opts(
+        {
+            "format": "bestaudio/best",
+            "outtmpl": out_template,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "64",
+            }],
+            "match_filter": yt_dlp.utils.match_filter_func(
+                f"duration <=? {settings.YTDLP_MAX_DURATION_SEC}"
+            ),
+        },
+        tmp_dir=tmp_dir,
+        logger=logger,
+    )
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -60,6 +54,9 @@ def _download_audio(url: str, tmp_dir: str) -> str:
 
 
 def transcribe_from_url(url: str) -> str:
+    """YouTube URL → 오디오 다운로드 → STT 전사 텍스트 반환."""
+    from app.services import stt_providers
+
     with tempfile.TemporaryDirectory(prefix="tennis-stt-") as tmp_dir:
         try:
             audio_path = _download_audio(url, tmp_dir)
@@ -68,18 +65,11 @@ def transcribe_from_url(url: str) -> str:
             raise RuntimeError(f"audio_download_failed: {e}") from e
 
         try:
-            model = _load_model()
-            segments, _ = model.transcribe(
-                audio_path,
-                language="ko",
-                beam_size=5,
-            )
-            lines = []
-            for seg in segments:
-                lines.append(f"[{seg.start:.1f}s] {seg.text.strip()}")
-            text = "\n".join(lines)
+            segments, stats = stt_providers.transcribe_audio(audio_path)
+            logger.info("stt stats: %s", stats)
+            text = segments_to_transcript_text(segments)
         except Exception as e:
-            logger.warning("faster-whisper transcribe failed: %s", e)
+            logger.warning("stt transcribe failed: %s", e)
             raise RuntimeError(f"whisper_transcribe_failed: {e}") from e
 
         return text.strip()
