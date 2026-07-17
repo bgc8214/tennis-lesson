@@ -138,3 +138,60 @@ def segments_to_transcript_text(segments: List[SttSegment]) -> str:
     for seg in segments:
         lines.append(f"[{seg.start:.1f}~{seg.end:.1f}] {seg.text.strip()}")
     return "\n".join(lines)
+
+
+@dataclass
+class TranscriptWindow:
+    """Pass A 호출 단위 — 고정 절대시간 구간 + 그 구간에 속한 세그먼트."""
+
+    window_start: float
+    window_end: float
+    segments: List[SttSegment]
+
+
+def split_segments_into_windows(
+    segments: List[SttSegment], window_sec: float
+) -> List[TranscriptWindow]:
+    """세그먼트를 영상 재생 시간 기준 고정 절대시간 window_sec 창으로 분할한다.
+
+    09문서 1-5 가설("전사를 작은 창으로 나눠 각각 독립 호출하면 리콜이
+    개선된다")은 실측(2026-07-17, Wh2B6VyR_ys 56.9분, 동일 캐시된 STT
+    결과에 창 크기만 바꿔 A/B)으로 반증됨:
+      10분 창(5개) 검증통과 8개 < 15분(4개) 12개 < 20분(3개) 11개
+      < 30분(2개) 15개 < 단일 창(1개, 전체) 13개
+    창을 작게 나눌수록 리콜이 오히려 떨어졌다. 현재 gemini_service.py의
+    WHISPER_PASS_A_WINDOW_SEC는 항상 단일 창이 되도록 충분히 크게 고정되어
+    있고, 이 함수 자체는 향후 다른 실험(예: 겹치는 슬라이딩 윈도우)을 위해
+    남겨둔 것이다 — 기본 파이프라인에서는 실질적으로 분할이 일어나지 않는다.
+
+    창 경계는 [0, window_sec), [window_sec, 2*window_sec), ... 처럼 오디오
+    시작을 기준으로 고정한다(세그먼트가 나타나는 시각 기준이 아님) — 이렇게
+    하지 않고 세그먼트 등장 시각 기준으로 나누면, 발화가 뜸한 구간에서
+    "창 길이"가 실제보다 훨씬 짧게 계산되어 개수 가이드(길이 비례)가
+    무력화되는 버그가 있었다(2026-07-17 확인 후 수정).
+    세그먼트가 하나도 없는 창(완전 무음 구간)은 결과 리스트에서 제외한다.
+
+    빈 세그먼트 리스트나 window_sec<=0이면 전체를 단일 창으로 반환한다.
+    """
+    if not segments:
+        return []
+    if window_sec <= 0:
+        return [TranscriptWindow(segments[0].start, segments[-1].end, segments)]
+
+    total_end = segments[-1].end
+    windows: List[TranscriptWindow] = []
+    idx = 0
+    n = len(segments)
+    window_start = 0.0
+
+    while window_start < total_end:
+        window_end = window_start + window_sec
+        bucket: List[SttSegment] = []
+        while idx < n and segments[idx].start < window_end:
+            bucket.append(segments[idx])
+            idx += 1
+        if bucket:
+            windows.append(TranscriptWindow(window_start, window_end, bucket))
+        window_start = window_end
+
+    return windows
