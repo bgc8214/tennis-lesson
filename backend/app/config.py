@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     # LLM 인용 vs 전사 원문 fuzzy match 통과 임계값 (정규화 텍스트 기준)
     VERIFY_MATCH_THRESHOLD: float = 0.75
 
+    # === STT 전사 품질 (09문서 1-1/1-2) ===
+    # STT initial_prompt에 테니스 용어 사전을 주입할지 여부.
+    STT_TERM_HINT_ENABLED: bool = True
+    # 코트 원거리 마이크 저볼륨(mean -27~-40dB 실측) 보정을 위한 오디오 전처리
+    # (highpass + loudnorm) 활성화 여부. compression_ratio 필터 오탐 가능성이
+    # 있어 골든셋 A/B로 검증 전에는 기본 False로 시작.
+    AUDIO_PREPROCESS_ENABLED: bool = False
+
     # === yt-dlp ===
     YTDLP_FORMAT: str = "bestaudio/best"
     YTDLP_MAX_DURATION_SEC: int = 5400
