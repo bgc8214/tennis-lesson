@@ -16,6 +16,7 @@ export interface FeedbackItem {
   label: string;
   quote?: string | null;
   fix?: string | null;
+  matchScore?: number | null;
   source: "court" | "timestamp";
 }
 
@@ -117,6 +118,7 @@ export function mergeFeedbackItems(
         label: ts.label,
         quote: ts.quote ?? null,
         fix: ts.fix ?? null,
+        matchScore: ts.match_score ?? null,
         source: "timestamp",
       });
     }
@@ -224,11 +226,18 @@ export function FeedbackTimeline({
                   {mainText}
                 </p>
 
-                {/* Quote */}
+                {/* Quote — 09문서 1-6: 검증된 코치 발언 원문 + match_score 뱃지 */}
                 {item.quote && (
-                  <p className="mt-1 text-xs italic text-gray-400">
-                    &ldquo;{item.quote}&rdquo;
-                  </p>
+                  <div className="mt-1.5">
+                    {item.matchScore != null && (
+                      <span className="mb-1 flex w-fit items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        🎾 코치님 말씀 · 일치도 {Math.round(item.matchScore * 100)}%
+                      </span>
+                    )}
+                    <p className="text-xs italic text-gray-400">
+                      &ldquo;{item.quote}&rdquo;
+                    </p>
+                  </div>
                 )}
 
                 {/* Fix (timestamps only) */}

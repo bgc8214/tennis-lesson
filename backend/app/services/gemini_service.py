@@ -193,6 +193,23 @@ def _coerce_scenarios(value: Any) -> List[Dict[str, str]]:
     return out[:4]
 
 
+def _coerce_ai_context(value: Any) -> List[Dict[str, str]]:
+    """09문서 1-6: AI 보조 설명 항목. quote 필드가 없어 verify_report 검증
+    대상에서 애초에 제외된다 — 프론트에서 "AI 보조 설명" 라벨과 함께
+    코치 인용 영역과 분리 노출해야 함(코드 레벨로는 강제 불가)."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        note = str(item.get("note", "")).strip()
+        if title and note:
+            out.append({"title": title[:20], "note": note[:200]})
+    return out[:3]
+
+
 def _coerce_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     try:
         return float(value)
@@ -1190,6 +1207,13 @@ WHISPER_PASS_A_PROMPT = (
     '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
+# 09문서 1-6: "검증된 사실" vs "AI 보조 설명" 2계층 리포트.
+# card1~3/timestamps는 verify_report()가 quote를 전사 원문과 대조하는 검증
+# 대상이지만, ai_context는 quote 필드 자체가 없어 검증 대상에서 애초에
+# 제외된다 — 즉 AI의 일반 테니스 지식(용어 설명, 왜 이 교정이 중요한지,
+# 추천 셀프 드릴)을 안전하게 노출하는 별도 채널이다. 프론트에서 반드시
+# "AI 보조 설명" 라벨과 함께 코치 인용 영역과 시각적으로 분리해 노출해야
+# 사용자가 "코치가 실제로 한 말"과 혼동하지 않는다.
 WHISPER_PASS_B_PROMPT = (
     '당신은 테니스 레슨 코칭 리포트를 종합하는 담당자입니다.\n'
     '아래는 한 레슨 전체를 구간별로 나눠 이미 추출·검증된 코치 피드백 목록입니다 '
@@ -1202,7 +1226,14 @@ WHISPER_PASS_B_PROMPT = (
     '- card1_evidence/card2_evidence/card3_evidence는 위 목록의 quote 중 하나를 '
     '한 글자도 바꾸지 않고 그대로 복사하세요.\n'
     '- category별 등장 횟수가 표시되어 있다면, card1(고질병)에는 가장 반복된 '
-    '지적을 "N회 반복 지적"처럼 정량 근거와 함께 명시하세요.\n\n'
+    '지적을 "N회 반복 지적"처럼 정량 근거와 함께 명시하세요.\n'
+    '- ai_context는 예외입니다: 코치가 실제로 한 말이 아니라, 당신의 테니스 '
+    '일반 지식으로 위 피드백을 보충 설명하는 영역입니다. "코치가 이렇게 '
+    '말했다"는 인용문처럼 쓰지 말고, 왜 이 교정이 중요한지·이 용어가 무엇인지· '
+    '집에서 해볼 수 있는 셀프 드릴 등을 항목당 1~2문장으로 작성하세요. '
+    '위 목록에 없는 일반 지식이어도 괜찮습니다(단, 사실처럼 위장하지 말고 '
+    '보충 설명임이 문장 자체로 드러나야 함 — 예: "~때 흔히 쓰는 방법은" '
+    '"~에 도움이 되는 연습은").\n\n'
     '아래 JSON 하나만 출력하세요:\n'
     '{{"card1_problem": "코치가 반복 지적한 핵심 문제 1~2문장 (반복 횟수 근거 포함)", '
     '"card1_evidence": "card1의 근거가 된 목록 원문 인용", '
@@ -1213,14 +1244,16 @@ WHISPER_PASS_B_PROMPT = (
     '"full_summary": "레슨 전체 흐름 요약 3~5문단 (목록 내용만 사용)", '
     '"lesson_type": ["포핸드"], '
     '"steps": ["① 단계1", "② 단계2"], '
-    '"scenarios": [{{"condition": "상황", "action": "대처"}}]}}\n\n'
+    '"scenarios": [{{"condition": "상황", "action": "대처"}}], '
+    '"ai_context": [{{"title": "10자 이내 제목", "note": "보충 설명 1~2문장"}}]}}\n\n'
     '규칙:\n'
     '1) 모든 문자열은 한국어.\n'
     '2) lesson_type: ["포핸드","백핸드","발리","서브","로브","스텝","풋워크",'
     '"게임레슨","드롭샷","어프로치"] 중 1~3개.\n'
     '3) steps: 코치가 알려준 기술 동작 ①②③ 순서로 3~6개. 목록에 없으면 [].\n'
     '4) scenarios: 코치가 언급한 상황별 대처법. 목록에 없으면 [].\n'
-    '5) 순수 JSON만 출력. 마크다운 펜스 금지.'
+    '5) ai_context: 0~3개. 보충할 내용이 없으면 빈 배열 [].\n'
+    '6) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 
@@ -1483,6 +1516,8 @@ def generate_lesson_report_whisper(
         "timestamps":    _compact_timestamps(_coerce_timestamps(verified_feedbacks)),
         "gemini_model":  settings.GEMINI_MODEL,
         "transcript_text": transcript_text,
+        # 09문서 1-6: quote 없는 AI 보조 설명 — verify_report 대상이 아님(의도적).
+        "ai_context":    _coerce_ai_context(parsed_b.get("ai_context")),
         # 신규 메타 (기존 응답 shape에 additive — DB 저장은 라우터에서 선택)
         "stt_stats": stt_stats,
         "verification": combined_verify_stats,

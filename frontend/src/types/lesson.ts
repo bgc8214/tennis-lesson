@@ -89,6 +89,17 @@ export interface LessonTimestamp {
   importance?: "high" | "medium" | "low";
   confidence?: number | null;
   severity?: "critical" | "normal";
+  /** 검증 게이트(quote vs STT 전사 원문 fuzzy match) 통과 점수. 0~1, 높을수록
+   * 코치 발언 원문과 가깝게 일치. whisper 검증 경로에서만 존재. */
+  match_score?: number | null;
+}
+
+/** 09문서 1-6: AI 보조 설명 — quote 없어 검증 게이트 대상이 아님.
+ * "코치가 실제로 한 말"이 아니라 AI 일반 지식 보충이므로, 렌더링 시
+ * 코치 인용 영역과 시각적으로 분리하고 "AI 보조 설명" 라벨을 반드시 노출할 것. */
+export interface AiContextNote {
+  title: string;
+  note: string;
 }
 
 export interface LessonReport {
@@ -97,6 +108,7 @@ export interface LessonReport {
   card3_action: string | null;
   keywords: string[];
   timestamps: LessonTimestamp[];
+  ai_context?: AiContextNote[];
   full_summary: string | null;
   transcript_source: TranscriptSource;
   transcript_text?: string | null;
