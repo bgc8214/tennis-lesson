@@ -1176,8 +1176,10 @@ WHISPER_PASS_A_MAX_PER_10MIN = 8
 WHISPER_PASS_A_PROMPT = (
     '당신은 테니스 레슨 전사 스크립트에서 코치 피드백만 추출하는 담당자입니다.\n'
     '테니스 지식으로 내용을 보충하거나 "코치가 보통 이렇게 말한다"는 추론은 엄격히 금지됩니다.\n\n'
-    '아래는 코치가 수강생에게 진행한 1:1 테니스 레슨 전체 중 '
-    '{window_label} 구간의 STT 전사 스크립트입니다.\n'
+    '아래는 코치가 수강생에게 진행한 테니스 레슨 전체 중 '
+    '{window_label} 구간의 STT 전사 스크립트입니다. 수강생은 한 명일 수도 '
+    '있고(1:1 레슨) 여러 명일 수도 있습니다(게임 레슨·그룹 레슨) — 스크립트만 '
+    '보고 판단하세요.\n'
     '각 줄은 "[시작초~종료초] 발화 내용" 형식입니다(초는 영상 전체 기준).\n\n'
     '===== 전사 스크립트 시작 =====\n'
     '{transcript}\n'
@@ -1200,11 +1202,15 @@ WHISPER_PASS_A_PROMPT = (
     '가이드 — 이보다 적어도 되고(진짜 피드백이 적으면), 실제로 그만큼 있다면 '
     '가이드를 넘어도 됩니다. 개수 맞추기보다 스크립트에 있는 코치의 명확한 '
     '교정/드릴/전술 발언을 빠짐없이 담는 것이 우선입니다.\n'
-    '3) 수강생 반응, 카운트, 단순 칭찬/진행 멘트("좋아","오케이","자")는 제외.\n'
-    '4) type은 "교정", "드릴", "전술" 중 하나. importance는 high|medium|low.\n'
-    '5) category는 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
-    '6) problem/fix도 스크립트에서 언급된 것만. 명확하지 않으면 빈 문자열.\n'
-    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
+    '3) 수강생이 여러 명인 게임·그룹 레슨에서는 특정 수강생 이름을 지적하는 '
+    '개별 교정("재호씨는~")과, 전체를 대상으로 한 경기 운영·포지션·순서에 '
+    '관한 전술 지시("공이 짧으면 들어와", "로테이션")를 구분해 type을 '
+    '정하세요 — 전자는 "교정", 후자는 "전술"에 가깝습니다.\n'
+    '4) 수강생 반응, 카운트, 단순 칭찬/진행 멘트("좋아","오케이","자")는 제외.\n'
+    '5) type은 "교정", "드릴", "전술" 중 하나. importance는 high|medium|low.\n'
+    '6) category는 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
+    '7) problem/fix도 스크립트에서 언급된 것만. 명확하지 않으면 빈 문자열.\n'
+    '8) 순수 JSON만 출력. 마크다운 펜스 금지.'
 )
 
 # 09문서 1-6: "검증된 사실" vs "AI 보조 설명" 2계층 리포트.
@@ -1223,10 +1229,17 @@ WHISPER_PASS_B_PROMPT = (
     '===== 검증된 피드백 목록 끝 =====\n\n'
     '규칙:\n'
     '- 위 목록에 있는 내용만 근거로 사용하세요. 목록에 없는 내용을 지어내지 마세요.\n'
-    '- card1_evidence/card2_evidence/card3_evidence는 위 목록의 quote 중 하나를 '
-    '한 글자도 바꾸지 않고 그대로 복사하세요.\n'
+    '- card1_evidence/card2_evidence/card3_evidence는 각 항목의 quote 줄에 있는 '
+    '큰따옴표(") 안쪽 텍스트만을 한 글자도 바꾸지 않고 그대로 복사하세요. '
+    '"문제:"나 "교정:" 뒤의 설명, 대괄호 태그, label은 evidence에 절대 '
+    '포함하지 마세요 — quote 큰따옴표 안쪽 문장만입니다.\n'
     '- category별 등장 횟수가 표시되어 있다면, card1(고질병)에는 가장 반복된 '
     '지적을 "N회 반복 지적"처럼 정량 근거와 함께 명시하세요.\n'
+    '- 목록에 [전술] 태그가 [교정]/[드릴]보다 많거나 특정 수강생 이름이 여러 '
+    '명 등장한다면, 이는 다수 수강생 대상 게임·그룹 레슨입니다. 이 경우 '
+    'card1~3과 full_summary는 특정 한 명의 개인 교정이 아니라 경기 운영· '
+    '포지션·로테이션 등 전술 피드백을 중심으로 작성하고, lesson_type에 '
+    '"게임레슨"을 포함하세요.\n'
     '- ai_context는 예외입니다: 코치가 실제로 한 말이 아니라, 당신의 테니스 '
     '일반 지식으로 위 피드백을 보충 설명하는 영역입니다. "코치가 이렇게 '
     '말했다"는 인용문처럼 쓰지 말고, 왜 이 교정이 중요한지·이 용어가 무엇인지· '
@@ -1449,14 +1462,19 @@ def generate_lesson_report_whisper(
         if cat:
             category_counts[cat] = category_counts.get(cat, 0) + 1
 
+    # quote를 별도 줄로 명시적으로 분리 — 한 줄에 label/quote/problem/fix를
+    # 섞어 쓰면 Pass B가 "quote만 그대로 복사"해야 할 때 그 줄 전체(부가
+    # 설명까지)를 통째로 evidence에 복사해 검증 실패하는 사고가 실측됨
+    # (2026-07-17, aYA3iILW2B0: card1~3 evidence에 "(문제: ... / 교정: ...)"
+    # 까지 포함되어 전사 미매칭으로 3개 카드 전부 폐기).
     feedback_lines = []
     for fb in verified_feedbacks:
         cat = fb.get("category") or ""
         count_note = f" ({category_counts.get(cat)}회 중 하나)" if category_counts.get(cat, 0) > 1 else ""
         feedback_lines.append(
-            f"- [{fb.get('sec')}초][{fb.get('type')}][{cat}{count_note}] "
-            f"{fb.get('label', '')}: {fb.get('quote', '')} "
-            f"(문제: {fb.get('problem', '')} / 교정: {fb.get('fix', '')})"
+            f"- [{fb.get('sec')}초][{fb.get('type')}][{cat}{count_note}] {fb.get('label', '')}\n"
+            f'  quote(이 줄 전체를 그대로 복사할 것): "{fb.get("quote", "")}"\n'
+            f"  문제: {fb.get('problem', '') or '(없음)'} / 교정: {fb.get('fix', '') or '(없음)'}"
         )
     verified_feedbacks_text = "\n".join(feedback_lines)
 
