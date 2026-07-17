@@ -1131,6 +1131,98 @@ def _analyze_youtube_url_segment(
 #   신뢰 가능한 STT 전사 → LLM은 전사 텍스트의 구조화만 → 코드 레벨 인용 검증
 # 3단으로 분리한다. LLM이 전사에 없는 내용을 지어내면 verification 게이트에서
 # timestamps/card가 자동 폐기되므로 할루시네이션이 최종 리포트에 도달할 수 없다.
+#
+# 09문서 1-5: Pass A(추출)와 Pass B(전체 종합)로 분리.
+#
+# 원래 가설은 "전사를 10~15분 창으로 나눠 각각 Pass A를 호출하면 창마다
+# 완전한 주의를 받아 리콜이 오른다"였다. 실측(2026-07-17, Wh2B6VyR_ys
+# 56.9분, 캐시된 동일 STT 결과로 창 크기만 바꿔 A/B)으로 정반대 결과가
+# 나와 이 가설은 반증됨:
+#   10분 창(5개) → 검증통과 8개 / 15분 창(4개) → 12개 / 20분 창(3개) → 11개
+#   30분 창(2개) → 15개 / 단일 창(1개, 전체) → 13개
+# 창을 작게 나눌수록 오히려 리콜이 떨어졌다 — 개수 가이드가 작은 창에서
+# LLM을 더 소극적으로 만들거나, 창 경계가 문맥을 끊어 판단을 방해하는
+# 것으로 추정. 반면 "추출 전용 프롬프트로 Pass A/B를 분리"한 것 자체는
+# 유효했다(기존 단일 호출 통합 프롬프트 10개 → Pass A 단일 호출 13개).
+#
+# 결론: 창 분할은 쓰지 않고 Pass A를 전체 전사에 대해 한 번만 호출한다.
+# WHISPER_PASS_A_WINDOW_SEC를 영상 최대 허용 길이보다 크게 잡아 항상
+# 단일 창이 되도록 한다(YTDLP_MAX_DURATION_SEC 기본 5400s=90분보다 크게).
+# split_segments_into_windows 자체는 향후 다른 실험을 위해 남겨둔다.
+WHISPER_PASS_A_WINDOW_SEC = 24 * 3600
+# 개수 가이드는 영상 길이에 비례한다(고정값 "15~30개"는 60분 영상에서도
+# 동일해 리콜을 강제로 낮추는 효과가 있었음 — 09문서 1-5 원 문제 진단은
+# 유효, 해법만 "창 분할"이 아니라 "단일 호출 + 길이비례 가이드"로 수정).
+WHISPER_PASS_A_MIN_PER_10MIN = 3
+WHISPER_PASS_A_MAX_PER_10MIN = 8
+
+WHISPER_PASS_A_PROMPT = (
+    '당신은 테니스 레슨 전사 스크립트에서 코치 피드백만 추출하는 담당자입니다.\n'
+    '테니스 지식으로 내용을 보충하거나 "코치가 보통 이렇게 말한다"는 추론은 엄격히 금지됩니다.\n\n'
+    '아래는 여성 코치가 남성 수강생에게 진행한 1:1 테니스 레슨 전체 중 '
+    '{window_label} 구간의 STT 전사 스크립트입니다.\n'
+    '각 줄은 "[시작초~종료초] 발화 내용" 형식입니다(초는 영상 전체 기준).\n\n'
+    '===== 전사 스크립트 시작 =====\n'
+    '{transcript}\n'
+    '===== 전사 스크립트 끝 =====\n\n'
+    '절대 규칙 — 위반 항목은 자동 검증기에서 폐기됩니다:\n'
+    '- 스크립트에 없는 내용은 한 글자도 쓰지 마세요.\n'
+    '- quote는 위 스크립트의 발화 내용에서 연속된 구간을 한 글자도 바꾸지 않고 '
+    '그대로 복사한 것이어야 합니다. 요약/의역/재구성 금지.\n'
+    '- sec는 그 quote가 포함된 줄의 시작초를 그대로 사용하세요. 추정 금지.\n'
+    '- 이 구간에 명확한 코치 피드백이 없으면 feedbacks를 빈 배열로 반환하세요. '
+    '개수를 채우려고 애쓰지 마세요.\n\n'
+    '아래 JSON 하나만 출력하세요:\n'
+    '{{"feedbacks": [{{"sec": 정수, "type": "교정", "category": "포핸드", '
+    '"label": "20자 이내 요약", "quote": "스크립트 원문 그대로 인용", '
+    '"problem": "코치가 지적한 문제", "fix": "교정법", "importance": "high"}}], '
+    '"keywords": ["키워드1", "키워드2"]}}\n\n'
+    '규칙:\n'
+    '1) 모든 문자열은 한국어. keywords는 이 구간에 실제로 등장한 단어만, 최대 3개.\n'
+    '2) feedbacks: 이 구간 길이({window_minutes}분) 기준 {min_count}~{max_count}개 '
+    '가이드 — 이보다 적어도 되고(진짜 피드백이 적으면), 실제로 그만큼 있다면 '
+    '가이드를 넘어도 됩니다. 개수 맞추기보다 스크립트에 있는 코치의 명확한 '
+    '교정/드릴/전술 발언을 빠짐없이 담는 것이 우선입니다.\n'
+    '3) 수강생 반응, 카운트, 단순 칭찬/진행 멘트("좋아","오케이","자")는 제외.\n'
+    '4) type은 "교정", "드릴", "전술" 중 하나. importance는 high|medium|low.\n'
+    '5) category는 포핸드/백핸드/발리/서브/로브/스텝/풋워크/기타 중 하나.\n'
+    '6) problem/fix도 스크립트에서 언급된 것만. 명확하지 않으면 빈 문자열.\n'
+    '7) 순수 JSON만 출력. 마크다운 펜스 금지.'
+)
+
+WHISPER_PASS_B_PROMPT = (
+    '당신은 테니스 레슨 코칭 리포트를 종합하는 담당자입니다.\n'
+    '아래는 한 레슨 전체를 구간별로 나눠 이미 추출·검증된 코치 피드백 목록입니다 '
+    '(이미 전사 원문과 대조를 마친 사실만 포함되어 있으니 내용을 그대로 신뢰하세요).\n\n'
+    '===== 검증된 피드백 목록 시작 =====\n'
+    '{verified_feedbacks}\n'
+    '===== 검증된 피드백 목록 끝 =====\n\n'
+    '규칙:\n'
+    '- 위 목록에 있는 내용만 근거로 사용하세요. 목록에 없는 내용을 지어내지 마세요.\n'
+    '- card1_evidence/card2_evidence/card3_evidence는 위 목록의 quote 중 하나를 '
+    '한 글자도 바꾸지 않고 그대로 복사하세요.\n'
+    '- category별 등장 횟수가 표시되어 있다면, card1(고질병)에는 가장 반복된 '
+    '지적을 "N회 반복 지적"처럼 정량 근거와 함께 명시하세요.\n\n'
+    '아래 JSON 하나만 출력하세요:\n'
+    '{{"card1_problem": "코치가 반복 지적한 핵심 문제 1~2문장 (반복 횟수 근거 포함)", '
+    '"card1_evidence": "card1의 근거가 된 목록 원문 인용", '
+    '"card2_cueing": "코치가 제시한 핵심 이미지/큐잉 1~2문장", '
+    '"card2_evidence": "card2의 근거가 된 목록 원문 인용", '
+    '"card3_action": "다음 연습 때 집중할 구체 행동 1~2문장", '
+    '"card3_evidence": "card3의 근거가 된 목록 원문 인용", '
+    '"full_summary": "레슨 전체 흐름 요약 3~5문단 (목록 내용만 사용)", '
+    '"lesson_type": ["포핸드"], '
+    '"steps": ["① 단계1", "② 단계2"], '
+    '"scenarios": [{{"condition": "상황", "action": "대처"}}]}}\n\n'
+    '규칙:\n'
+    '1) 모든 문자열은 한국어.\n'
+    '2) lesson_type: ["포핸드","백핸드","발리","서브","로브","스텝","풋워크",'
+    '"게임레슨","드롭샷","어프로치"] 중 1~3개.\n'
+    '3) steps: 코치가 알려준 기술 동작 ①②③ 순서로 3~6개. 목록에 없으면 [].\n'
+    '4) scenarios: 코치가 언급한 상황별 대처법. 목록에 없으면 [].\n'
+    '5) 순수 JSON만 출력. 마크다운 펜스 금지.'
+)
+
 
 WHISPER_VERIFIED_PROMPT = (
     '당신은 테니스 레슨 전사 스크립트를 구조화하는 담당자입니다.\n'
@@ -1176,20 +1268,76 @@ WHISPER_VERIFIED_PROMPT = (
 )
 
 
+def _run_pass_a_for_window(
+    client: Any,
+    types: Any,
+    model: str,
+    window: "TranscriptWindow",
+) -> Dict[str, Any]:
+    """단일 창을 Pass A 프롬프트로 추출.
+
+    개수 가이드는 창의 목표 길이(window.window_end - window.window_start)에
+    비례한다 — 실제 발화 세그먼트의 시간 범위로 계산하면 발화가 뜸한 창에서
+    가이드가 부당하게 깎이는 버그가 있었음(stt_filters.split_segments_into_windows
+    docstring 참고).
+
+    Returns:
+        {"feedbacks": [...], "keywords": [...]}. 실패 시 양쪽 다 빈 리스트
+        (한 창의 실패가 다른 창까지 막지 않도록).
+    """
+    from app.services.stt_filters import segments_to_transcript_text
+
+    window_label = f"{_format_mmss(int(window.window_start))}~{_format_mmss(int(window.window_end))}"
+    window_minutes = max(1, round((window.window_end - window.window_start) / 60))
+    min_count = max(1, round(WHISPER_PASS_A_MIN_PER_10MIN * window_minutes / 10))
+    max_count = max(min_count, round(WHISPER_PASS_A_MAX_PER_10MIN * window_minutes / 10))
+
+    prompt = WHISPER_PASS_A_PROMPT.format(
+        window_label=window_label,
+        transcript=segments_to_transcript_text(window.segments),
+        window_minutes=window_minutes,
+        min_count=min_count,
+        max_count=max_count,
+    )
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=8192,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        parsed = _parse_json(response.text or "")
+        feedbacks = parsed.get("feedbacks")
+        keywords = parsed.get("keywords")
+        return {
+            "feedbacks": feedbacks if isinstance(feedbacks, list) else [],
+            "keywords": keywords if isinstance(keywords, list) else [],
+        }
+    except Exception as e:
+        logger.warning("[whisper] Pass A 창 실패 (%s): %s", window_label, e)
+        return {"feedbacks": [], "keywords": []}
+
+
 def generate_lesson_report_whisper(
     youtube_url: str,
     on_progress: Optional[ProgressCallback] = None,
 ) -> dict:
-    """Grounded 파이프라인: STT 전사 → Gemini 구조화 → 코드 레벨 인용 검증.
+    """Grounded 파이프라인: STT 전사 → Gemini 2단 구조화(Pass A/B) → 코드 레벨 인용 검증.
 
     1) yt-dlp 오디오 다운로드
     2) STT_PROVIDER(local faster-whisper | groq)로 전사 + 환청 필터
-    3) 전사 텍스트만 Gemini에 전달해 리포트 JSON 생성 (temperature=0.0)
-    4) verification: 모든 quote/evidence를 전사 원문과 fuzzy match,
-       미매칭 timestamp 폐기 / 미매칭 card 폐기(null) / sec 재계산
+    3) Pass A: 전사를 WHISPER_PASS_A_WINDOW_SEC 단위 창으로 나눠 각 창에서
+       독립적으로 피드백(timestamps) 추출 (09문서 1-5 — 단일 호출 대비 리콜 개선 가설)
+    4) verification: Pass A 결과의 모든 quote를 전사 원문과 fuzzy match,
+       미매칭 timestamp 폐기 / sec 재계산 — 검증된 사실만 Pass B로 전달
+    5) Pass B: 검증된 피드백 목록만 보고 card1/2/3 + steps/scenarios 종합
+       (Pass B는 이미 검증된 입력만 다루므로 별도 검증 불필요)
     """
     from app.services import stt_providers, verification
-    from app.services.stt_filters import segments_to_transcript_text
+    from app.services.stt_filters import segments_to_transcript_text, split_segments_into_windows
 
     settings = get_settings()
     if not settings.GEMINI_API_KEY:
@@ -1230,44 +1378,112 @@ def generate_lesson_report_whisper(
             len(segments), stt_stats.get("provider"),
         )
 
-    # 3) Gemini 구조화 — 전사 텍스트만 전달, temperature 0.0
+    # 3) Pass A — 창 단위 추출
     _notify(3, "📝 오답노트 정리 중... (3/3)")
-    logger.info("[whisper] Gemini 구조화 중...")
+    logger.info("[whisper] Gemini Pass A 구조화 중...")
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
-    prompt = WHISPER_VERIFIED_PROMPT.format(transcript=transcript_text)
+    windows = split_segments_into_windows(segments, WHISPER_PASS_A_WINDOW_SEC)
+    logger.info("[whisper] Pass A 창 수: %d (창당 %ds)", len(windows), WHISPER_PASS_A_WINDOW_SEC)
+
+    raw_feedbacks: List[Dict[str, Any]] = []
+    all_keywords: List[str] = []
+    for idx, window in enumerate(windows, start=1):
+        window_result = _run_pass_a_for_window(client, types, settings.GEMINI_MODEL, window)
+        raw_feedbacks.extend(fb for fb in window_result["feedbacks"] if isinstance(fb, dict))
+        all_keywords.extend(str(k) for k in window_result["keywords"] if str(k).strip())
+        _notify(3, f"📝 오답노트 정리 중... (3/3) — {idx}/{len(windows)} 구간")
+
+    logger.info("[whisper] Pass A 추출 완료: %d개 피드백 후보 (창 %d개)", len(raw_feedbacks), len(windows))
+
+    # 4) 코드 레벨 인용 검증 — 전사에 없는 quote 자동 폐기, sec 재계산
+    pseudo_report = {"timestamps": raw_feedbacks}
+    verified_a, verify_stats = verification.verify_report(
+        pseudo_report, segments, threshold=settings.VERIFY_MATCH_THRESHOLD
+    )
+    verified_feedbacks = verified_a.get("timestamps") or []
+    logger.info("[whisper] Pass A 검증 통계: %s", verify_stats)
+
+    if not verified_feedbacks:
+        raise RuntimeError("검증을 통과한 피드백이 없습니다 (전사에 실제 코치 발언이 없거나 추출 실패)")
+
+    # 5) Pass B — 검증된 피드백만 보고 카드 종합 (별도 검증 불필요)
+    category_counts: Dict[str, int] = {}
+    for fb in verified_feedbacks:
+        cat = str(fb.get("category") or "").strip()
+        if cat:
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    feedback_lines = []
+    for fb in verified_feedbacks:
+        cat = fb.get("category") or ""
+        count_note = f" ({category_counts.get(cat)}회 중 하나)" if category_counts.get(cat, 0) > 1 else ""
+        feedback_lines.append(
+            f"- [{fb.get('sec')}초][{fb.get('type')}][{cat}{count_note}] "
+            f"{fb.get('label', '')}: {fb.get('quote', '')} "
+            f"(문제: {fb.get('problem', '')} / 교정: {fb.get('fix', '')})"
+        )
+    verified_feedbacks_text = "\n".join(feedback_lines)
+
+    logger.info("[whisper] Gemini Pass B 종합 중...")
+    pass_b_prompt = WHISPER_PASS_B_PROMPT.format(verified_feedbacks=verified_feedbacks_text)
     response = client.models.generate_content(
         model=settings.GEMINI_MODEL,
-        contents=prompt,
+        contents=pass_b_prompt,
         config=types.GenerateContentConfig(
             temperature=0.0,
-            max_output_tokens=16384,
+            max_output_tokens=8192,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    parsed = _parse_json(response.text or "")
+    parsed_b = _parse_json(response.text or "")
 
-    # 4) 코드 레벨 인용 검증 — 전사에 없는 quote/card 자동 폐기, sec 재계산
-    verified, verify_stats = verification.verify_report(
-        parsed, segments, threshold=settings.VERIFY_MATCH_THRESHOLD
+    # Pass B의 card evidence는 검증된 피드백 목록에서만 뽑도록 프롬프트로
+    # 강제했지만, 그래도 verify_report로 한 번 더 대조해 이중 안전장치를 둔다.
+    pseudo_cards = {
+        "card1_problem": parsed_b.get("card1_problem"),
+        "card1_evidence": parsed_b.get("card1_evidence"),
+        "card2_cueing": parsed_b.get("card2_cueing"),
+        "card2_evidence": parsed_b.get("card2_evidence"),
+        "card3_action": parsed_b.get("card3_action"),
+        "card3_evidence": parsed_b.get("card3_evidence"),
+    }
+    verified_b, card_verify_stats = verification.verify_report(
+        pseudo_cards, segments, threshold=settings.VERIFY_MATCH_THRESHOLD
     )
-    logger.info("[whisper] 검증 통계: %s", verify_stats)
+    logger.info("[whisper] Pass B 카드 검증 통계: %s", card_verify_stats)
+
+    combined_verify_stats = {
+        "match_threshold": settings.VERIFY_MATCH_THRESHOLD,
+        "timestamps_total": verify_stats.get("timestamps_total", 0),
+        "timestamps_verified": verify_stats.get("timestamps_verified", 0),
+        "timestamps_dropped": verify_stats.get("timestamps_dropped", 0),
+        "cards_dropped": card_verify_stats.get("cards_dropped", []),
+        "pass_a_windows": len(windows),
+    }
+
+    # 창별 keywords를 등장 빈도순으로 중복 제거 — 여러 창에서 같은 단어가
+    # 반복될수록(=레슨 전체에서 더 자주 언급될수록) 앞으로 오게 한다.
+    keyword_counts: Dict[str, int] = {}
+    for kw in all_keywords:
+        keyword_counts[kw] = keyword_counts.get(kw, 0) + 1
+    deduped_keywords = sorted(keyword_counts, key=lambda k: -keyword_counts[k])
 
     return {
-        "card1_problem": str(verified.get("card1_problem") or "").strip() or None,
-        "card2_cueing":  str(verified.get("card2_cueing")  or "").strip() or None,
-        "card3_action":  str(verified.get("card3_action")  or "").strip() or None,
-        "full_summary":  str(verified.get("full_summary")  or "").strip() or None,
-        "keywords":      _coerce_keywords(verified.get("keywords")),
-        "lesson_type":   _coerce_lesson_type(verified.get("lesson_type")),
-        "steps":         _coerce_steps(verified.get("steps")),
-        "scenarios":     _coerce_scenarios(verified.get("scenarios")),
-        "timestamps":    _compact_timestamps(_coerce_timestamps(verified.get("timestamps"))),
+        "card1_problem": str(verified_b.get("card1_problem") or "").strip() or None,
+        "card2_cueing":  str(verified_b.get("card2_cueing")  or "").strip() or None,
+        "card3_action":  str(verified_b.get("card3_action")  or "").strip() or None,
+        "full_summary":  str(parsed_b.get("full_summary")  or "").strip() or None,
+        "keywords":      _coerce_keywords(deduped_keywords),
+        "lesson_type":   _coerce_lesson_type(parsed_b.get("lesson_type")),
+        "steps":         _coerce_steps(parsed_b.get("steps")),
+        "scenarios":     _coerce_scenarios(parsed_b.get("scenarios")),
+        "timestamps":    _compact_timestamps(_coerce_timestamps(verified_feedbacks)),
         "gemini_model":  settings.GEMINI_MODEL,
         "transcript_text": transcript_text,
         # 신규 메타 (기존 응답 shape에 additive — DB 저장은 라우터에서 선택)
         "stt_stats": stt_stats,
-        "verification": verify_stats,
+        "verification": combined_verify_stats,
     }
