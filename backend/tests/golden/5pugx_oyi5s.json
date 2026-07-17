@@ -1,0 +1,22 @@
+{
+  "video_id": "5PUGx-OYI5s",
+  "youtube_url": "https://youtu.be/5PUGx-OYI5s",
+  "duration_sec": 1179,
+  "lesson_id": "e750f12c-9432-49ed-af40-34ff0828b8ee",
+  "run_at": "2026-07-17T16:05:41Z",
+  "funnel": {"stt_total": 367, "stt_kept": 33, "timestamps_total": 8, "timestamps_verified": 7},
+  "note": "인용 문장이 문맥상 부자연스러움('앨범을 이렇게 이렇게 해서' 등) — whisper가 저볼륨 신호에서 그럴듯한 오인식을 만들었을 가능성 의심. 검토 우선순위 1위.",
+  "verified_feedbacks": [
+    {"sec": 405, "quote": "요건 근육이 이렇게 올라가요", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 408, "quote": "이 앨범을 이렇게 이렇게 해서 더 앞으로 가요", "match_score": 0.8, "status": "unreviewed", "suspect": "문맥상 '앨범'이 등장할 이유가 없음 — 오인식 의심"},
+    {"sec": 415, "quote": "팔에 힘을 빼고 그리운 방식으로 하나", "match_score": 1.0, "status": "unreviewed", "suspect": "'그리운 방식으로'가 코칭 발언으로 부자연스러움"},
+    {"sec": 420, "quote": "이렇게 해서 시간을 이렇게 평화하고 이렇게 올리잖아요", "match_score": 1.0, "status": "unreviewed", "suspect": "'평화하고'가 부자연스러움"},
+    {"sec": 1032, "quote": "천천히 천천히", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1052, "quote": "앉아야지", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1054, "quote": "누가 밟아야 되는거지", "match_score": 1.0, "status": "unreviewed"}
+  ],
+  "missed_feedbacks": [],
+  "dropped_but_maybe_valid": [
+    {"sec": 413, "quote": "꽉 잡아!", "reason": "전사 미매칭으로 폐기됨 — 실제 발언이면 재현율 손실 사례"}
+  ]
+}

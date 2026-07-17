@@ -1,0 +1,27 @@
+{
+  "video_id": "4mr0tVIu9sw",
+  "youtube_url": "https://youtu.be/4mr0tVIu9sw",
+  "duration_sec": 1601,
+  "lesson_id": "2f23444b-5c0e-42bb-a3dd-f13d6d52f73b",
+  "run_at": "2026-07-16T18:13:37Z",
+  "funnel": {"stt_total": 517, "stt_kept": 184, "timestamps_total": 15, "timestamps_verified": 15},
+  "note": "다른 3개보다 인용 품질이 안정적으로 보임 — 기준선(baseline) 후보.",
+  "verified_feedbacks": [
+    {"sec": 82, "quote": "바퀴 전체가 소음을 생겨놓고 가뿐히 유지는 하고 떨어졌다가 올라가야 되는데 이 바퀴가 이렇게 탁 떨어졌다가 올라가야 되는 거죠 하나 같이 돌아가", "match_score": 0.938, "status": "unreviewed"},
+    {"sec": 167, "quote": "금방 붙어가면 안 돼", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 176, "quote": "대지 말고", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 312, "quote": "제가 공주면 앞으로 완전히 들어와서 내리고 다시 진단을 보면 뒤로 그 길을 내렸다고", "match_score": 0.847, "status": "unreviewed"},
+    {"sec": 546, "quote": "마지막에 약간 헤딩을 벗어서 살짝 더 넘어가면 되겠지?", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1146, "quote": "삼각형 움직이다가, 하나, 하나, 뒤로 가야 돼", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1157, "quote": "삼각형 키고", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1272, "quote": "팔 펴서 엎어서 봐야죠?", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1282, "quote": "너무 손 빼지 말라", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1284, "quote": "몸을 딱 켜봐라", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1377, "quote": "손을 왜 이렇게 위로 다 넣었나?", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1387, "quote": "내려옵나 지금 멈춰", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1404, "quote": "뒷발이 어떻게 돼야 돼요?", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1436, "quote": "자, 몸이 흔들려서 호흡, 힘이 그냥 그래, 이번엔 이만 조금 더 내려가야 된다", "match_score": 1.0, "status": "unreviewed"},
+    {"sec": 1455, "quote": "꼭 여기서 이쪽 무릎을 봐야 되는데 그냥 여기서 툭 내보내면", "match_score": 1.0, "status": "unreviewed"}
+  ],
+  "missed_feedbacks": []
+}

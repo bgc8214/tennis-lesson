@@ -1,0 +1,24 @@
+{
+  "video_id": "aYA3iILW2B0",
+  "youtube_url": "https://youtu.be/aYA3iILW2B0",
+  "duration_sec": 3554,
+  "lesson_id": "1e145c13-e729-49e5-bc3e-f6d6be5b7632",
+  "run_at": "2026-07-17T16:47:29Z",
+  "funnel": {"stt_total": 824, "stt_kept": 191, "timestamps_total": 10, "timestamps_verified": 8, "cards_dropped": ["card1_problem", "card3_action"]},
+  "note": "09문서 1-1(용어사전 initial_prompt)의 실증 근거. 참가자 이름/전문용어 오인식 다수 확인.",
+  "verified_feedbacks": [
+    {"sec": 1213, "quote": "허리에 발을 쥐고\n나는 안 돼\n끌어오지마\n없어요?\n허벅지 가", "match_score": 0.821, "status": "unreviewed"},
+    {"sec": 1723, "quote": "치다가 나오는데\n공을 치면\n계속 들어가죠\n공이 안 들어가지 않으면\n나갈 수 없어", "match_score": 0.769, "status": "unreviewed"},
+    {"sec": 1898, "quote": "때리지 마세요 때리지 마세요\n수비는 안 되잖아요 수비는 안 되잖아요\n이게 되는데 내가 눈이 들어가면\n이게 다 나아가야 되는 거예요", "match_score": 0.872, "status": "unreviewed"},
+    {"sec": 2058, "quote": "로봇 금지\n자 가요\n둘이 위치가 여기서 있으면 로봇이 꽤 쉬워요\n어렵죠", "match_score": 0.943, "status": "unreviewed"},
+    {"sec": 2169, "quote": "재호씨한테 들어가서 톡톡 내리지 마요\n그럼 재호씨의 위치가 어디일까?\n거기에 있어\n수리발이 아까 그 스텝으로\n톡 치면서 여기", "match_score": 0.8, "status": "unreviewed", "suspect": "'수리발이'는 '숏발리' 오인식 의심 — initial_prompt 용어사전으로 검증할 1순위 사례"},
+    {"sec": 2197, "quote": "그땐 공이 빛만 없을 정도로 누가 뛰어야 돼요?\n마이 뛰어요\n마이 뛰어야 돼요\n본인은 가발이 뛰어요", "match_score": 0.87, "status": "unreviewed", "suspect": "'가발이'는 사람 이름 또는 '가벼이' 오인식 의심"},
+    {"sec": 2265, "quote": "그 때 딱 들을때는\n치고 들을때는 이동이 안되면\n그 때까지 됐을때는\n어 저게 시간이 좀 도망갔다는데", "match_score": 0.904, "status": "unreviewed"},
+    {"sec": 2917, "quote": "호흡해!\n내가 어디있어?\n내가 어디있으라고?\n내가 이렇게 들어가는 순간 지혁이가 못 보인다고\n내가 여기서 이렇게 했다 그만 들어오고\n이렇게 들어가는 순간 지혁이가 못 보인다고", "match_score": 0.864, "status": "unreviewed", "suspect": "'지혁이'는 참가자 이름으로 추정 — initial_prompt에 이름 주입 시 인식률 검증 대상"}
+  ],
+  "missed_feedbacks": [],
+  "dropped_cards": [
+    {"key": "card1_problem", "evidence": "재호씨한테 들어가서 톡톡 내리지 마요\n그럼 재호씨의 위치가 어디일까?\n거기에 있어\n수리발이 아까 그 스텝으로", "reason": "이름/용어 오인식으로 전사 미매칭 → 카드 자체가 폐기됨. initial_prompt로 오인식이 줄면 이 카드가 살아날 가능성."},
+    {"key": "card3_action", "evidence": "수리발이 아까 그 스텝으로\n톡 치면서 여기\n근데 이게 하다 보면\n순간을 까먹을 수도 있어\n근데 만약에 한 번", "reason": "위와 동일 원인"}
+  ]
+}
