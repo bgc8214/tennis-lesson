@@ -116,6 +116,37 @@ export function NoteCards({ report }: NoteCardsProps) {
         </section>
       )}
 
+      {/* AI 코치 노트 — 09문서 1-6: quote 없는 AI 일반 지식 보충 설명.
+          코치 인용 카드(1~3)와 확실히 다른 배경색·아이콘으로 구분하고
+          "AI 보조 설명" 라벨을 항상 노출해 코치 발언으로 오인되지 않게 함. */}
+      {report.ai_context && report.ai_context.length > 0 && (
+        <section className="rounded-2xl border-2 border-dashed border-violet-200 bg-violet-50 p-5 shadow-sm">
+          <header className="mb-3 flex items-center gap-2">
+            <span className="text-lg" aria-hidden>
+              💡
+            </span>
+            <h3 className="text-base font-bold text-violet-700 sm:text-lg">
+              AI 코치 노트
+            </h3>
+            <span className="rounded-full bg-violet-200 px-2 py-0.5 text-[10px] font-semibold text-violet-800">
+              AI 보조 설명
+            </span>
+          </header>
+          <ul className="space-y-3">
+            {report.ai_context.map((note, i) => (
+              <li key={`${note.title}-${i}`}>
+                <p className="text-sm font-semibold text-violet-900">
+                  {note.title}
+                </p>
+                <p className="mt-0.5 text-sm leading-relaxed text-violet-700">
+                  {note.note}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* 키워드 */}
       {report.keywords?.length > 0 && (
         <div className="flex flex-wrap gap-2 pt-1">
