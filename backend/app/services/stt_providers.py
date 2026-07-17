@@ -31,26 +31,68 @@ GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 # 안전하게 청크 분할 기준(초)을 두고 넘으면 ffmpeg로 분할 업로드한다.
 GROQ_CHUNK_SECONDS = 1800  # 30분 청크 ≈ 7.2MB (32kbps 기준)
 
+# 09문서 1-1: whisper initial_prompt로 도메인 용어 인식률을 높인다.
+# gemini_service.ALLOWED_LESSON_TYPES 및 청크 프롬프트의 "테니스 용어 참고"
+# 목록과 동일 어휘를 재사용.
+#
+# 실측 결과(aYA3iILW2B0 클립 A/B, 2026-07-17): 용어 사전만으로는 "숏발리"→
+# "수비발이" 같은 음향 레벨 오인식이 개선되지 않았다(3가지 프롬프트 조합
+# 모두 동일 오인식 재현). 참가자 이름을 단독 주입하면 무음/카운팅 구간에서
+# 그 이름을 수십 회 반복하는 할루시네이션이 새로 발생함을 확인 — 다행히
+# compression_ratio 후단 필터가 이 반복을 정확히 걸러냈다. 즉 이름 주입은
+# 목표한 개선 효과가 확인되지 않았고 부작용 위험만 실증됐으므로, 참가자
+# 이름은 기본적으로 주입하지 않는다(호출부 옵션은 남겨두되 명시적 opt-in
+# 없이는 사용하지 말 것 — 09문서 1-1 후속 재검토 필요).
+TENNIS_TERM_HINT = (
+    "타점, 팔로우스루, 내전, 라켓드롭, 토스, 발리, 스플릿스텝, 풋워크, "
+    "크로스, 다운더라인, 트로피자세, 하프발리, 슬라이스, 스트로크, "
+    "포핸드, 백핸드, 서브, 로브, 드롭샷, 어프로치, 숏발리, 그립"
+)
+
 ProgressCallback = Callable[[str], None]
+
+
+def _build_initial_prompt(participant_names: Optional[List[str]] = None) -> Optional[str]:
+    """테니스 용어 사전 + (명시적으로 전달된 경우) 참가자 이름을 whisper
+    initial_prompt로 합성한다.
+
+    참가자 이름 주입은 실측 결과 효과 미확인 + 반복 할루시네이션 위험이
+    확인된 기능이라(모듈 상단 주석 참고) 호출부가 명시적으로 값을 넘기지
+    않는 한 사용되지 않는다.
+    """
+    settings = get_settings()
+    if not settings.STT_TERM_HINT_ENABLED:
+        return None
+    parts = [TENNIS_TERM_HINT]
+    if participant_names:
+        parts.append(", ".join(n.strip() for n in participant_names if n.strip()))
+    return " ".join(parts) if parts else None
 
 
 def transcribe_audio(
     audio_path: str,
     on_progress: Optional[ProgressCallback] = None,
+    participant_names: Optional[List[str]] = None,
 ) -> Tuple[List[SttSegment], Dict[str, Any]]:
     """설정된 STT_PROVIDER로 전사 후 환청 필터를 적용해 반환한다.
+
+    Args:
+        participant_names: 레슨 참가자 이름. 실측상 오인식 개선 효과가
+            확인되지 않고 반복 할루시네이션 위험만 있어(모듈 상단 주석),
+            명시적으로 opt-in하지 않는 한 비워둘 것. 현재 호출부는 항상 비움.
 
     Returns:
         (필터 통과 세그먼트, 통계 dict)
     """
     settings = get_settings()
     provider = (settings.STT_PROVIDER or "local").strip().lower()
+    initial_prompt = _build_initial_prompt(participant_names)
 
     if provider == "groq":
-        raw_segments = _transcribe_groq(audio_path, on_progress)
+        raw_segments = _transcribe_groq(audio_path, on_progress, initial_prompt)
     else:
         provider = "local"
-        raw_segments = _transcribe_local(audio_path, on_progress)
+        raw_segments = _transcribe_local(audio_path, on_progress, initial_prompt)
 
     kept, filter_stats = filter_hallucinated_segments(raw_segments)
     logger.info(
@@ -71,6 +113,7 @@ def transcribe_audio(
 def _transcribe_local(
     audio_path: str,
     on_progress: Optional[ProgressCallback] = None,
+    initial_prompt: Optional[str] = None,
 ) -> List[SttSegment]:
     """faster-whisper 로컬 전사 (환청 억제 파라미터 적용).
 
@@ -83,30 +126,50 @@ def _transcribe_local(
       전적으로 맡긴다.
     - condition_on_previous_text=False: 이전 환청이 다음 창으로 전파되는 것 차단
     - temperature=0.0: 샘플링 창작 차단
+    - initial_prompt: 09문서 1-1. 테니스 용어(+참가자 이름)를 whisper 인코더에
+      선힌트로 제공해 도메인 어휘 인식률을 높인다.
     """
     from faster_whisper import WhisperModel
 
     settings = get_settings()
-    logger.info("[stt:local] faster-whisper %s 로드", settings.WHISPER_MODEL_SIZE)
-    model = WhisperModel(
-        settings.WHISPER_MODEL_SIZE or "base",
-        device=settings.WHISPER_DEVICE or "cpu",
-        compute_type="int8",
-    )
+    audio_input = audio_path
+    tmp_dir_holder = None
+    if settings.AUDIO_PREPROCESS_ENABLED:
+        tmp_dir_holder = tempfile.TemporaryDirectory(prefix="tennis-stt-pre-")
+        audio_input = _preprocess_audio(audio_path, tmp_dir_holder.name)
 
-    segments_iter, info = model.transcribe(
-        audio_path,
-        language=settings.WHISPER_LANGUAGE or "ko",
-        beam_size=5,
-        temperature=0.0,
-        condition_on_previous_text=False,
-        vad_filter=False,
-        # whisper 기본 임계값 — 세그먼트 지표는 어차피 후단 필터에서 재검사한다.
-        no_speech_threshold=0.6,
-        log_prob_threshold=-1.0,
-        compression_ratio_threshold=2.4,
-    )
+    try:
+        logger.info("[stt:local] faster-whisper %s 로드", settings.WHISPER_MODEL_SIZE)
+        model = WhisperModel(
+            settings.WHISPER_MODEL_SIZE or "base",
+            device=settings.WHISPER_DEVICE or "cpu",
+            compute_type="int8",
+        )
 
+        segments_iter, info = model.transcribe(
+            audio_input,
+            language=settings.WHISPER_LANGUAGE or "ko",
+            beam_size=5,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            vad_filter=False,
+            initial_prompt=initial_prompt,
+            # whisper 기본 임계값 — 세그먼트 지표는 어차피 후단 필터에서 재검사한다.
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
+        )
+        return _collect_local_segments(segments_iter, info, on_progress)
+    finally:
+        if tmp_dir_holder is not None:
+            tmp_dir_holder.cleanup()
+
+
+def _collect_local_segments(
+    segments_iter: Any,
+    info: Any,
+    on_progress: Optional[ProgressCallback],
+) -> List[SttSegment]:
     total = getattr(info, "duration", 0.0) or 0.0
     out: List[SttSegment] = []
     for seg in segments_iter:
@@ -127,22 +190,65 @@ def _transcribe_local(
     return out
 
 
-# ─── groq: hosted whisper-large-v3-turbo ─────────────────────────────
+# ─── 공통: 오디오 전처리 (09문서 1-2) ─────────────────────────────────
 
 
-def _reencode_for_upload(audio_path: str, tmp_dir: str) -> str:
-    """업로드 크기 최소화: 16kHz mono 32kbps mp3 재인코딩 (Groq 권장 전처리)."""
-    out_path = os.path.join(tmp_dir, "stt_upload.mp3")
+def _preprocess_audio(audio_path: str, tmp_dir: str) -> str:
+    """저볼륨 코트 오디오 보정: highpass(저주파 노이즈 제거) + loudnorm(EBU R128).
+
+    가설(09문서 1-2): mean_volume -27~-40dB — 표준 발화(-20dB 안팎) 대비 낮아
+    no_speech_prob가 과대 산출될 가능성 → -16 LUFS 정규화로 개선.
+
+    실측 결과(5PUGx-OYI5s 60초 클립 A/B, 2026-07-17): 가설이 반증됨.
+    - kept 세그먼트 수가 오히려 줄었다(원본 12개 → 전처리 9개, no_speech
+      탈락은 양쪽 동일 12개로 무음 판별 개선 없음).
+    - 골든셋(tests/golden/5pugx_oyi5s.json)에서 이미 의심 표시했던 정확히
+      같은 위치(27초 근방)에 새로운 할루시네이션이 발생함: 원본 "이 애를
+      잘 이렇게 펴서" → 전처리 후 "이 앨범을 잘하고 이렇게 펴서". 노이즈
+      증폭이 whisper의 그럴듯한 오인식을 유발하는 것으로 보인다.
+    결론: 이 필터 체인은 기본으로 켜지 않는다(AUDIO_PREPROCESS_ENABLED 기본
+    False 유지). 다른 필터 파라미터로 재검증 전까지 실사용 비권장.
+    """
+    out_path = os.path.join(tmp_dir, "preprocessed.wav")
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", audio_path,
-            "-ar", "16000", "-ac", "1", "-b:a", "32k",
+            "-af", "highpass=f=100,loudnorm=I=-16:TP=-1.5:LRA=11",
             out_path,
         ],
         capture_output=True,
         check=True,
     )
     return out_path
+
+
+# ─── groq: hosted whisper-large-v3-turbo ─────────────────────────────
+
+
+def _reencode_for_upload(audio_path: str, tmp_dir: str) -> str:
+    """업로드 크기 최소화: 16kHz mono 32kbps mp3 재인코딩 (Groq 권장 전처리)."""
+    settings = get_settings()
+    source = audio_path
+    pre_tmp_dir = None
+    if settings.AUDIO_PREPROCESS_ENABLED:
+        pre_tmp_dir = tempfile.TemporaryDirectory(prefix="tennis-groq-pre-")
+        source = _preprocess_audio(audio_path, pre_tmp_dir.name)
+
+    try:
+        out_path = os.path.join(tmp_dir, "stt_upload.mp3")
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", source,
+                "-ar", "16000", "-ac", "1", "-b:a", "32k",
+                out_path,
+            ],
+            capture_output=True,
+            check=True,
+        )
+        return out_path
+    finally:
+        if pre_tmp_dir is not None:
+            pre_tmp_dir.cleanup()
 
 
 def _audio_duration(audio_path: str) -> float:
@@ -192,6 +298,7 @@ def _groq_transcribe_file(
     api_key: str,
     model: str,
     language: str,
+    initial_prompt: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """단일 파일을 Groq transcription API(verbose_json)로 전사."""
     import httpx
@@ -204,6 +311,8 @@ def _groq_transcribe_file(
             "response_format": "verbose_json",
             "temperature": "0",
         }
+        if initial_prompt:
+            data["prompt"] = initial_prompt
         resp = httpx.post(
             GROQ_TRANSCRIPTION_URL,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -220,6 +329,7 @@ def _groq_transcribe_file(
 def _transcribe_groq(
     audio_path: str,
     on_progress: Optional[ProgressCallback] = None,
+    initial_prompt: Optional[str] = None,
 ) -> List[SttSegment]:
     """Groq 호스티드 Whisper 전사. 업로드 한도 초과 시 분할 후 오프셋 보정."""
     settings = get_settings()
@@ -241,7 +351,7 @@ def _transcribe_groq(
                 on_progress(f"음성 인식 중... ({idx}/{len(chunks)})")
             offset = float(chunk["offset_sec"])
             raw_segments = _groq_transcribe_file(
-                chunk["path"], api_key, model, language
+                chunk["path"], api_key, model, language, initial_prompt
             )
             for seg in raw_segments:
                 if not isinstance(seg, dict):
