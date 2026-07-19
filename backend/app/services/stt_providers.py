@@ -6,6 +6,13 @@
 
 두 경로 모두 SttSegment 리스트를 반환하고, 공통 환청 필터
 (stt_filters.filter_hallucinated_segments)를 통과시킨다.
+
+15문서 2-C(2026-07-19): groq(whisper-large-v3-turbo)를 골든셋 2개 영상으로
+실측한 결과 quote precision이 local(medium)보다 낫지 않고 recall은 오히려
+악화됨(검증된 코칭 지점 다수에서 세그먼트 자체가 드롭). large-v3 계열
+반복 루프 할루시네이션(09문서 1-8)도 turbo에서 재현. STT 모델 교체로
+인용 정밀도를 올리는 접근은 여기서 탐색 종료 — 새 실측 근거 없이는
+다른 모델을 추가하지 않는다.
 """
 
 from __future__ import annotations
