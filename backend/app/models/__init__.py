@@ -7,7 +7,14 @@ from app.models.lesson import (
     LessonSummary,
     ProcessingStatus,
 )
-from app.models.report import LessonReport, LessonTimestamp, TranscriptSource
+from app.models.report import (
+    CoachCommentRequest,
+    LessonReport,
+    LessonTimestamp,
+    QuickNoteUpdateRequest,
+    ReactionUpdateRequest,
+    TranscriptSource,
+)
 
 __all__ = [
     "LessonAnalyzeRequest",
@@ -18,4 +25,7 @@ __all__ = [
     "LessonTimestamp",
     "ProcessingStatus",
     "TranscriptSource",
+    "ReactionUpdateRequest",
+    "QuickNoteUpdateRequest",
+    "CoachCommentRequest",
 ]

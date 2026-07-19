@@ -197,9 +197,84 @@ export async function getLesson(id: string): Promise<LessonDetail> {
           transcript_text: (rep.transcript_text as string | null) ?? null,
           court_tactics: (rep.court_tactics as import("@/types/lesson").CourtTactic[] | null) ?? null,
           court_analysis_status: (rep.court_analysis_status as import("@/types/lesson").CourtAnalysisStatus | null) ?? null,
+          reactions: (rep.reactions as import("@/types/lesson").ReactionsMap) ?? {},
+          quick_note: (rep.quick_note as string | null) ?? null,
         }
       : null,
   };
+}
+
+/** PUT lessons/:id/reactions — 13문서 대체카드: 카드/타임스탬프별 👍/👎 토글 */
+export async function updateReaction(
+  lessonId: string,
+  targetKey: string,
+  value: import("@/types/lesson").ReactionValue | null,
+): Promise<import("@/types/lesson").ReactionsMap> {
+  const res = await fetchWithAuth<ApiSuccessResponse<{ reactions: import("@/types/lesson").ReactionsMap }>>(
+    `/api/v1/lessons/${lessonId}/reactions`,
+    { method: "PUT", body: { target_key: targetKey, value } },
+  );
+  return res.data.reactions;
+}
+
+/** PATCH lessons/:id/quick-note — 13문서 대체카드: 텍스트 한 줄 수요 테스트 */
+export async function updateQuickNote(
+  lessonId: string,
+  quickNote: string,
+): Promise<string | null> {
+  const res = await fetchWithAuth<ApiSuccessResponse<{ quick_note: string | null }>>(
+    `/api/v1/lessons/${lessonId}/quick-note`,
+    { method: "PATCH", body: { quick_note: quickNote } },
+  );
+  return res.data.quick_note;
+}
+
+/** POST lessons/:id/share-link — 09문서 #5: 코치 확인용 공개 링크 토큰 발급/조회 */
+export async function createShareLink(lessonId: string): Promise<string> {
+  const res = await fetchWithAuth<ApiSuccessResponse<{ share_token: string }>>(
+    `/api/v1/lessons/${lessonId}/share-link`,
+    { method: "POST" },
+  );
+  return res.data.share_token;
+}
+
+export interface PublicLessonReport {
+  card1_problem: string | null;
+  card2_cueing: string | null;
+  card3_action: string | null;
+  keywords: string[];
+  timestamps: import("@/types/lesson").LessonTimestamp[];
+  transcript_quality: import("@/types/lesson").TranscriptQuality;
+  ai_context: import("@/types/lesson").AiContextNote[];
+}
+
+export interface PublicLesson {
+  lesson_id: string;
+  title: string | null;
+  lesson_date: string | null;
+  youtube_video_id: string;
+  duration_sec: number | null;
+  report: PublicLessonReport | null;
+}
+
+/** GET public/lessons/:share_token — 인증 불필요, 코치가 여는 읽기전용 뷰 */
+export async function getPublicLesson(shareToken: string): Promise<PublicLesson> {
+  const res = await fetchWithAuth<ApiSuccessResponse<PublicLesson>>(
+    `/api/v1/public/lessons/${shareToken}`,
+  );
+  return res.data;
+}
+
+/** POST public/lessons/:share_token/coach-comment — 인증 불필요, 코치 검증+코멘트 */
+export async function submitCoachComment(
+  shareToken: string,
+  verdict: "confirmed" | "needs_fix",
+  comment?: string,
+): Promise<void> {
+  await fetchWithAuth(`/api/v1/public/lessons/${shareToken}/coach-comment`, {
+    method: "POST",
+    body: { verdict, comment },
+  });
 }
 
 /** DELETE lessons/:id — Supabase 직접 삭제 */

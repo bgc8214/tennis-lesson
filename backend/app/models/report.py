@@ -1,11 +1,13 @@
 """레슨 리포트 도메인 Pydantic 모델."""
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 TranscriptSource = Literal["YOUTUBE_CAPTION", "WHISPER_STT", "UNKNOWN"]
+
+ReactionValue = Literal["up", "down"]
 
 CourtPosition = Literal[
     "net_left", "net_center", "net_right",
@@ -53,3 +55,26 @@ class LessonReport(BaseModel):
     completed_at: Optional[datetime] = None
     court_tactics: Optional[List[CourtTactic]] = None
     court_analysis_status: Optional[CourtAnalysisStatus] = None
+    # 13문서 대체카드: 카드/타임스탬프별 👍/👎, 텍스트 한 줄 수요 테스트
+    reactions: Dict[str, ReactionValue] = Field(default_factory=dict)
+    quick_note: Optional[str] = None
+
+
+class ReactionUpdateRequest(BaseModel):
+    """PUT /lessons/{lesson_id}/reactions 요청 본문."""
+
+    target_key: str = Field(min_length=1, max_length=64)
+    value: Optional[ReactionValue] = None  # None이면 반응 취소(토글 해제)
+
+
+class QuickNoteUpdateRequest(BaseModel):
+    """PATCH /lessons/{lesson_id}/quick-note 요청 본문."""
+
+    quick_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class CoachCommentRequest(BaseModel):
+    """POST /public/lessons/{share_token}/coach-comment 요청 본문."""
+
+    verdict: Literal["confirmed", "needs_fix"]
+    comment: Optional[str] = Field(default=None, max_length=300)

@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import type { CourtAnalysisStatus, CourtTactic, LessonTimestamp } from "@/types/lesson";
 import { mergeFeedbackItems, getPositionLabel, type FeedbackItem } from "./FeedbackTimeline";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { ReactionButtons } from "./ReactionButtons";
+import type { ReactionsMap } from "@/types/lesson";
 
 /* -------------------------------------------------------------------------- */
 /* Utilities                                                                   */
@@ -329,6 +331,13 @@ interface CourtDiagramProps {
    * quote 원문을 숨기고 모먼트 내비게이션으로 전환한다. court 출처(관절
    * 분석)는 별개 검증 체계라 이 판단에서 제외 — 계속 quote 그대로 노출. */
   transcriptQuality?: "high" | "low" | null;
+  /** 13문서 대체카드: 항목별 👍/👎 표시용. lessonId 없으면 반응 버튼 숨김. */
+  lessonId?: string;
+  reactions?: ReactionsMap;
+}
+
+function feedbackTargetKey(item: FeedbackItem): string {
+  return `${item.source}:${item.sec}`;
 }
 
 export function CourtDiagram({
@@ -339,6 +348,8 @@ export function CourtDiagram({
   selectedIndex: controlledIndex,
   onSelectIndex,
   transcriptQuality,
+  lessonId,
+  reactions = {},
 }: CourtDiagramProps) {
   const showQuote = transcriptQuality === "high";
   const [internalIndex, setInternalIndex] = useState<number | null>(null);
@@ -449,6 +460,15 @@ export function CourtDiagram({
                         </p>
                       )}
                     </>
+                  )}
+                  {lessonId && (
+                    <div className="mt-2 flex justify-end">
+                      <ReactionButtons
+                        lessonId={lessonId}
+                        targetKey={feedbackTargetKey(item)}
+                        initialValue={reactions[feedbackTargetKey(item)]}
+                      />
+                    </div>
                   )}
                 </button>
               </li>
@@ -589,6 +609,15 @@ export function CourtDiagram({
                         </p>
                       )}
                     </>
+                  )}
+                  {lessonId && (
+                    <div className="mt-2 flex justify-end">
+                      <ReactionButtons
+                        lessonId={lessonId}
+                        targetKey={feedbackTargetKey(item)}
+                        initialValue={reactions[feedbackTargetKey(item)]}
+                      />
+                    </div>
                   )}
                 </button>
               </li>

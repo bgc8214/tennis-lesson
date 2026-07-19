@@ -109,6 +109,10 @@ export interface AiContextNote {
  * 대신 모먼트 내비게이션(시각+카테고리+AI 추정 라벨)으로 렌더링해야 함. */
 export type TranscriptQuality = "high" | "low" | null;
 
+/** 13문서 대체카드: 카드/타임스탬프별 사용자 반응. target key → up|down. */
+export type ReactionValue = "up" | "down";
+export type ReactionsMap = Record<string, ReactionValue>;
+
 export interface LessonReport {
   card1_problem: string | null;
   card2_cueing: string | null;
@@ -127,6 +131,9 @@ export interface LessonReport {
   progress_message?: string | null;
   court_tactics?: CourtTactic[] | null;
   court_analysis_status?: CourtAnalysisStatus;
+  /** 13문서 대체카드: 셀프 음성 메모 강등 후 채택된 저마찰 대체 기능. */
+  reactions?: ReactionsMap;
+  quick_note?: string | null;
 }
 
 export interface LessonSummary {

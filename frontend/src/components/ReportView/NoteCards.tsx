@@ -1,7 +1,9 @@
 import type { LessonReport } from "@/types/lesson";
+import { ReactionButtons } from "./ReactionButtons";
 
 interface NoteCardsProps {
   report: LessonReport;
+  lessonId: string;
 }
 
 function extractFirstSentence(text: string | null): string | null {
@@ -40,7 +42,8 @@ function KeyLearnings({ report }: { report: LessonReport }) {
   );
 }
 
-export function NoteCards({ report }: NoteCardsProps) {
+export function NoteCards({ report, lessonId }: NoteCardsProps) {
+  const reactions = report.reactions ?? {};
   const hasContent =
     report.card1_problem || report.card2_cueing || report.card3_action;
 
@@ -71,6 +74,12 @@ export function NoteCards({ report }: NoteCardsProps) {
             <h3 className="text-base font-bold text-red-700 sm:text-lg">
               고질병
             </h3>
+            <ReactionButtons
+              className="ml-auto"
+              lessonId={lessonId}
+              targetKey="card1_problem"
+              initialValue={reactions.card1_problem}
+            />
           </header>
           <p className="leading-relaxed text-gray-800">
             {report.card1_problem}
@@ -91,6 +100,12 @@ export function NoteCards({ report }: NoteCardsProps) {
             <h3 className="text-base font-bold text-blue-700 sm:text-lg">
               코치 큐잉
             </h3>
+            <ReactionButtons
+              className="ml-auto"
+              lessonId={lessonId}
+              targetKey="card2_cueing"
+              initialValue={reactions.card2_cueing}
+            />
           </header>
           {/* 15문서 2-A: card2_cueing은 Pass B가 만든 취지 요약이지 코치
               원문 인용이 아니다 — 따옴표+blockquote는 "코치가 이렇게
@@ -114,6 +129,12 @@ export function NoteCards({ report }: NoteCardsProps) {
             <h3 className="text-base font-bold text-brand-700 sm:text-lg">
               액션 플랜
             </h3>
+            <ReactionButtons
+              className="ml-auto"
+              lessonId={lessonId}
+              targetKey="card3_action"
+              initialValue={reactions.card3_action}
+            />
           </header>
           <p className="leading-relaxed text-gray-800">{report.card3_action}</p>
         </section>
