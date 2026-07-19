@@ -31,6 +31,11 @@ from app.database import get_supabase_client
 from app.models.lesson import (
     LessonAnalyzeRequest,
 )
+from app.models.report import (
+    CoachCommentRequest,
+    QuickNoteUpdateRequest,
+    ReactionUpdateRequest,
+)
 from app.services import gemini_service, stt_service, youtube_service
 from app.services import court_service
 
@@ -92,6 +97,9 @@ def _serialize_report(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]
         # Phase 2: Court Tactics
         "court_tactics": row.get("court_tactics"),
         "court_analysis_status": row.get("court_analysis_status"),
+        # 13문서 대체카드: 👍/👎 반응, 텍스트 한 줄 수요 테스트
+        "reactions": row.get("reactions") or {},
+        "quick_note": row.get("quick_note"),
     }
 
 
@@ -720,6 +728,8 @@ def get_lesson(
             # Phase 2: Court Tactics
             "court_tactics": None,
             "court_analysis_status": None,
+            "reactions": {},
+            "quick_note": None,
         }
     else:
         summary["report"] = None
@@ -822,6 +832,142 @@ def delete_lesson(
         )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _get_owned_report_row(sb, lesson_id: str, user_id: str) -> Dict[str, Any]:
+    """소유권 확인 + lesson_reports 행 반환. 없으면 404."""
+    try:
+        res = (
+            sb.table("lessons")
+            .select("id, user_id, lesson_reports(id, reactions, quick_note)")
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("owned report lookup failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 조회에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    if not res.data or res.data[0].get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err("LESSON_NOT_FOUND", "해당 레슨을 찾을 수 없습니다.", details={"lesson_id": lesson_id}),
+        )
+
+    rep = res.data[0].get("lesson_reports")
+    if isinstance(rep, list):
+        rep = rep[0] if rep else None
+    if not rep:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err("LESSON_NOT_FOUND", "해당 레슨의 리포트를 찾을 수 없습니다.", details={"lesson_id": lesson_id}),
+        )
+    return rep
+
+
+@router.put("/{lesson_id}/reactions")
+def update_reaction(
+    payload: ReactionUpdateRequest,
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """13문서 대체카드: 카드/타임스탬프별 👍/👎 토글. value=null이면 반응 취소."""
+    sb = get_supabase_client()
+    rep = _get_owned_report_row(sb, lesson_id, user_id)
+
+    reactions: Dict[str, Any] = dict(rep.get("reactions") or {})
+    if payload.value is None:
+        reactions.pop(payload.target_key, None)
+    else:
+        reactions[payload.target_key] = payload.value
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        sb.table("lesson_reports").update(
+            {"reactions": reactions, "updated_at": now}
+        ).eq("lesson_id", lesson_id).execute()
+    except Exception as e:
+        logger.exception("reaction update failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "반응 저장에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    return {"data": {"reactions": reactions}}
+
+
+@router.patch("/{lesson_id}/quick-note")
+def update_quick_note(
+    payload: QuickNoteUpdateRequest,
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """13문서 대체카드: 셀프 음성 메모 강등 후 저비용 수요 테스트용 텍스트 한 줄."""
+    sb = get_supabase_client()
+    _get_owned_report_row(sb, lesson_id, user_id)
+
+    note = (payload.quick_note or "").strip() or None
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        sb.table("lesson_reports").update(
+            {"quick_note": note, "updated_at": now}
+        ).eq("lesson_id", lesson_id).execute()
+    except Exception as e:
+        logger.exception("quick_note update failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "메모 저장에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    return {"data": {"quick_note": note}}
+
+
+@router.post("/{lesson_id}/share-link")
+def create_share_link(
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """09문서 #5: 코치 확인용 공개 링크 토큰 발급 (없으면 생성, 있으면 기존 값 반환)."""
+    import uuid as uuid_lib
+
+    sb = get_supabase_client()
+    try:
+        res = (
+            sb.table("lessons")
+            .select("id, user_id, share_token")
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("share-link lookup failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 조회에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    if not res.data or res.data[0].get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_err("LESSON_NOT_FOUND", "해당 레슨을 찾을 수 없습니다.", details={"lesson_id": lesson_id}),
+        )
+
+    token = res.data[0].get("share_token")
+    if not token:
+        token = str(uuid_lib.uuid4())
+        try:
+            sb.table("lessons").update({"share_token": token}).eq("id", lesson_id).execute()
+        except Exception as e:
+            logger.exception("share-link create failed")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_err("UPSTREAM_ERROR", "공유 링크 생성에 실패했습니다.", details={"reason": str(e)}),
+            )
+
+    return {"data": {"share_token": token}}
 
 
 @router.post("/{lesson_id}/court-analysis", status_code=status.HTTP_202_ACCEPTED)

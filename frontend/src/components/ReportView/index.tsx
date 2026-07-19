@@ -6,6 +6,7 @@ import { VideoPlayer } from "./VideoPlayer";
 import { NoteCards } from "./NoteCards";
 import { ShareButtons } from "./ShareButtons";
 import { CourtDiagram } from "./CourtDiagram";
+import { QuickNote } from "./QuickNote";
 
 interface ReportViewProps {
   lesson: LessonDetail;
@@ -45,7 +46,7 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
       <div className="space-y-4">
         {report ? (
           <>
-            <NoteCards report={report} />
+            <NoteCards report={report} lessonId={lesson.lesson_id} />
             <CourtDiagram
               tactics={report.court_tactics ?? []}
               timestamps={report.timestamps ?? []}
@@ -54,8 +55,11 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
               selectedIndex={courtSelectedIndex}
               onSelectIndex={setCourtSelectedIndex}
               transcriptQuality={report.transcript_quality}
+              lessonId={lesson.lesson_id}
+              reactions={report.reactions}
             />
-            <ShareButtons report={report} lessonTitle={title} />
+            <QuickNote lessonId={lesson.lesson_id} initialValue={report.quick_note} />
+            <ShareButtons report={report} lessonTitle={title} lessonId={lesson.lesson_id} />
           </>
         ) : (
           <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-500">
@@ -67,4 +71,4 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
   );
 }
 
-export { VideoPlayer, NoteCards, ShareButtons, CourtDiagram };
+export { VideoPlayer, NoteCards, ShareButtons, CourtDiagram, QuickNote };

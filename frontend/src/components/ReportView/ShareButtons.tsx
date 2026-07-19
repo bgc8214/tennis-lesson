@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { LessonReport } from "@/types/lesson";
 import { useToast } from "@/components/ui/Toast";
+import { createShareLink } from "@/lib/api";
 
 interface KakaoShare {
   sendDefault: (params: {
@@ -27,6 +28,7 @@ declare global {
 interface ShareButtonsProps {
   report: LessonReport;
   lessonTitle: string;
+  lessonId: string;
 }
 
 let kakaoLoadingPromise: Promise<void> | null = null;
@@ -95,10 +97,11 @@ function buildShareText(report: LessonReport, title: string): string {
   return lines.join("\n").trim();
 }
 
-export function ShareButtons({ report, lessonTitle }: ShareButtonsProps) {
+export function ShareButtons({ report, lessonTitle, lessonId }: ShareButtonsProps) {
   const toast = useToast();
   const [isKakaoLoading, setIsKakaoLoading] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
+  const [isCoachLinkLoading, setIsCoachLinkLoading] = useState(false);
   const [pageUrl, setPageUrl] = useState("");
 
   useEffect(() => {
@@ -165,23 +168,51 @@ export function ShareButtons({ report, lessonTitle }: ShareButtonsProps) {
     }
   };
 
+  const handleCoachLink = async () => {
+    if (isCoachLinkLoading) return;
+    setIsCoachLinkLoading(true);
+    try {
+      const token = await createShareLink(lessonId);
+      const url = `${window.location.origin}/share/${token}`;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      }
+      toast.show("코치 확인 링크를 복사했어요. 코치님께 보내보세요.", "success");
+    } catch {
+      toast.show("링크 생성에 실패했습니다.", "error");
+    } finally {
+      setIsCoachLinkLoading(false);
+    }
+  };
+
   return (
-    <div className="flex gap-3 pt-2">
+    <div className="space-y-2 pt-2">
+      <div className="flex gap-3">
+        <button
+          type="button"
+          onClick={handleKakao}
+          disabled={isKakaoLoading}
+          className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-yellow-400 py-3 text-sm font-semibold text-black transition hover:bg-yellow-500 disabled:opacity-60 sm:text-base"
+        >
+          {isKakaoLoading ? "준비 중..." : "카카오톡으로 공유"}
+        </button>
+        <button
+          type="button"
+          onClick={handleCopy}
+          disabled={isCopying}
+          className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gray-100 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-200 disabled:opacity-60 sm:text-base"
+        >
+          {isCopying ? "복사 중..." : "텍스트 복사"}
+        </button>
+      </div>
+      {/* 09문서 #5: 코치 확인 링크 — 코치가 인증 없이 열어 검증/코멘트 남기는 공개 뷰 */}
       <button
         type="button"
-        onClick={handleKakao}
-        disabled={isKakaoLoading}
-        className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-yellow-400 py-3 text-sm font-semibold text-black transition hover:bg-yellow-500 disabled:opacity-60 sm:text-base"
+        onClick={handleCoachLink}
+        disabled={isCoachLinkLoading}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white py-2.5 text-sm font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-60"
       >
-        {isKakaoLoading ? "준비 중..." : "카카오톡으로 공유"}
-      </button>
-      <button
-        type="button"
-        onClick={handleCopy}
-        disabled={isCopying}
-        className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gray-100 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-200 disabled:opacity-60 sm:text-base"
-      >
-        {isCopying ? "복사 중..." : "텍스트 복사"}
+        {isCoachLinkLoading ? "링크 생성 중..." : "🎾 코치님께 확인 요청 링크 보내기"}
       </button>
     </div>
   );

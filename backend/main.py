@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
 from app.routers import lessons as lessons_router
+from app.routers import public as public_router
 
 # ─────────────────────────────────────────────────────────────────────
 # 로깅
@@ -138,6 +139,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # 라우터 등록
 # ─────────────────────────────────────────────────────────────────────
 app.include_router(lessons_router.router, prefix="/api/v1")
+app.include_router(public_router.router, prefix="/api/v1")
 
 
 # ─────────────────────────────────────────────────────────────────────
