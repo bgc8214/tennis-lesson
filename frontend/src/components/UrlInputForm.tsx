@@ -23,6 +23,35 @@ interface UrlInputFormProps {
   onAnalyzed?: (lessonId: string) => void;
 }
 
+/**
+ * 15문서 2-D: 촬영 가이드.
+ *
+ * 골든셋 사람 검토(2026-07-19)로 확인된 사실 — quote 정밀도는 13~20%로
+ * 낮지만 moment 정밀도는 100%(사람 귀로는 다 들림). 즉 오디오가 한계선
+ * *근처*라는 뜻이라, 마이크가 조금만 가까워져도 STT 결과가 크게 달라질
+ * 가능성이 크다. 새 영상 등록 전에 이 사실을 안내해 준수 유인을 만든다.
+ */
+function RecordingGuide() {
+  return (
+    <details className="mx-auto mt-4 max-w-2xl rounded-xl border border-gray-100 bg-gray-50 open:bg-white">
+      <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-700">
+        🎙️ 더 정확한 오답노트를 원한다면? 촬영 팁 보기
+      </summary>
+      <div className="space-y-1.5 px-4 pb-3 pt-1 text-xs leading-relaxed text-gray-600">
+        <p>
+          AI는 코치님이 말씀하신 <strong>순간</strong>은 거의 정확히 찾아내지만,
+          목소리가 멀면 <strong>정확한 문장</strong>까지는 못 알아듣는 경우가 있어요.
+        </p>
+        <ul className="list-disc space-y-1 pl-4">
+          <li>촬영할 때 폰을 코치님 쪽 펜스에 최대한 가깝게 두세요.</li>
+          <li>가능하면 네트 근처에서 촬영하면 목소리가 더 잘 들려요.</li>
+          <li>바람이 심한 날은 마이크가 바람 소리를 먼저 잡을 수 있어요 — 마이크 방향을 신경 써주세요.</li>
+        </ul>
+      </div>
+    </details>
+  );
+}
+
 export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
   const [url, setUrl] = useState("");
   const [analyzeCourt, setAnalyzeCourt] = useState(false);
@@ -204,6 +233,8 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
           <span className="text-xs text-gray-400">(+5~7분)</span>
         </label>
       </div>
+
+      {!isLoading && <RecordingGuide />}
 
       {isLoading && (
         <div className="mt-4 flex items-center justify-center gap-3 text-sm text-gray-600 animate-fade-in">
