@@ -185,6 +185,8 @@ export async function getLesson(id: string): Promise<LessonDetail> {
           card3_action: (rep.card3_action as string | null) ?? null,
           keywords: (rep.keywords as string[]) ?? [],
           timestamps: (rep.timestamps as LessonDetail["report"] extends null ? never : NonNullable<LessonDetail["report"]>["timestamps"]) ?? [],
+          ai_context: (rep.ai_context as import("@/types/lesson").AiContextNote[]) ?? [],
+          transcript_quality: (rep.transcript_quality as import("@/types/lesson").TranscriptQuality) ?? null,
           full_summary: (rep.full_summary as string | null) ?? null,
           transcript_source: (rep.transcript_source as LessonDetail["report"] extends null ? never : NonNullable<LessonDetail["report"]>["transcript_source"]) ?? "UNKNOWN",
           gemini_model: (rep.gemini_model as string | null) ?? null,

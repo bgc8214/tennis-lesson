@@ -79,6 +79,9 @@ def _serialize_report(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]
         "scenarios": row.get("scenarios") or [],
         "timestamps": row.get("timestamps") or [],
         "ai_context": row.get("ai_context") or [],
+        # 15문서 2-A: null이면 프론트가 구버전 레슨(마이그레이션 이전 생성)으로
+        # 취급 — quote 노출 여부 판단 시 null도 "신뢰 불가"로 처리해야 함.
+        "transcript_quality": row.get("transcript_quality"),
         "full_summary": row.get("full_summary"),
         "transcript_source": row.get("transcript_source") or "UNKNOWN",
         "gemini_model": row.get("gemini_model"),
@@ -196,6 +199,9 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str, analyze_court: bool
                 "scenarios": report.get("scenarios") or [],
                 "timestamps": report.get("timestamps") or [],
                 "ai_context": report.get("ai_context") or [],
+                "transcript_quality": report.get("transcript_quality"),
+                "stt_stats": report.get("stt_stats"),
+                "verification": report.get("verification"),
                 "transcript_source": transcript_source,
                 "gemini_model": report.get("gemini_model") or settings.GEMINI_MODEL,
                 "processing_status": "DONE",

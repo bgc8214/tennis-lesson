@@ -907,6 +907,9 @@ def generate_lesson_report(
         "scenarios":       _coerce_scenarios(parsed.get("scenarios")),
         "timestamps":      _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
         "gemini_model":    settings.GEMINI_MODEL,
+        # 15문서 2-A: 이 경로는 whisper 검증 게이트조차 없어 인용 신뢰도가
+        # whisper 경로보다도 낮다고 봐야 함 — 항상 low.
+        "transcript_quality": "low",
     }
 
 
@@ -1001,6 +1004,8 @@ def generate_lesson_report_youtube_url(
         "timestamps":    _compact_timestamps(_coerce_timestamps(parsed.get("timestamps"))),
         "gemini_model":  settings.GEMINI_MODEL,
         "video_title":   video_title,
+        # 15문서 2-A: 검증 게이트 없음 — 항상 low.
+        "transcript_quality": "low",
     }
 
 
@@ -1536,6 +1541,14 @@ def generate_lesson_report_whisper(
         "transcript_text": transcript_text,
         # 09문서 1-6: quote 없는 AI 보조 설명 — verify_report 대상이 아님(의도적).
         "ai_context":    _coerce_ai_context(parsed_b.get("ai_context")),
+        # 15문서 2-A: 인용 노출 여부 판단용 등급. match_score 평균/STT 필터
+        # 통과율 둘 다 실제 품질과 상관관계가 없음을 골든셋 3건 사람 검토로
+        # 실증(가장 필터 통과율이 높았던 영상이 오히려 정밀도가 가장 낮았음) —
+        # 그래서 자동 판정 로직을 만들지 않고, whisper 경로는 항상 "low"로
+        # 고정한다(인용 정밀도 실측 13~20%, 신뢰 노출 불가). stt_stats/
+        # verification을 DB에 쌓아두는 이유는 향후 진짜 판정 신호를 찾기
+        # 위한 원시 데이터 축적.
+        "transcript_quality": "low",
         # 신규 메타 (기존 응답 shape에 additive — DB 저장은 라우터에서 선택)
         "stt_stats": stt_stats,
         "verification": combined_verify_stats,

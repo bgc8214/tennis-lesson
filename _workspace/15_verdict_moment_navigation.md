@@ -5,6 +5,24 @@
 근거 데이터: `backend/tests/golden/{4mr0tviu9sw,5pugx_oyi5s}.json` (사람 검토 완료, `5f1cea6`),
 09문서 현황표(1-3/1-8), 커밋 `ac833ac`(전처리·용어사전 반증), large-v3 반증 실측
 
+> **[2026-07-19 갱신] 2절 실행 현황**:
+> - 2-A(모먼트 내비게이션) ✅ 구현 완료 — `transcript_quality` 등급을 whisper/gemini
+>   경로 모두 항상 `"low"`로 고정(판정 로직은 만들지 않음, 근거는 아래), DB 마이그레이션
+>   적용(`_workspace/15_quality_meta_migration.sql`), `CourtDiagram.tsx`/`NoteCards.tsx`에
+>   모먼트 내비게이션 UI 적용.
+>   - **판정 로직을 만들지 않은 이유**: 제안했던 신호(avg_logprob/match_score 평균/
+>     STT 필터 통과율)를 실측 검증한 결과 실제 품질과 상관관계가 없었음 —
+>     `4mr0tVIu9sw`(quote precision 최저 13.3%)가 STT 필터 통과율은 오히려 최고(35.6%).
+>     신호 부재 상태에서 자동 판정을 구현하면 "high"로 잘못 분류된 저품질 영상이
+>     생길 위험 → 안전하게 모든 영상 "low"로 고정.
+> - 2-B(moment_valid) ✅ 완료 — 골든셋 3/4 영상 사람 검토 완료(나머지 1개 `aya3iilw2b0`는
+>   판단 근거 충분하다고 보아 검토 보류), `eval_golden.py`에 moment precision 지표 추가.
+>   **결과: moment precision 100%** (라벨된 20건 전부 moment_valid=true, ambiguous 2건 제외) —
+>   1-2절 "~95% 예상"보다 강한 실증. quote precision은 13.3~20%로 여전히 낮음 — 1-1절
+>   결론이 정량적으로 재확인됨.
+> - 2-C(STT 탐색 종료 실험) ⬜ 미착수 — Groq API 키 미발급.
+> - 2-D(촬영 가이드) ⬜ 미착수.
+
 ---
 
 ## 1. 판정

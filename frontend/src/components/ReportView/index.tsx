@@ -53,6 +53,7 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
               onSeek={handleSeek}
               selectedIndex={courtSelectedIndex}
               onSelectIndex={setCourtSelectedIndex}
+              transcriptQuality={report.transcript_quality}
             />
             <ShareButtons report={report} lessonTitle={title} />
           </>
