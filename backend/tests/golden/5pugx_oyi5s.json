@@ -4,18 +4,78 @@
   "duration_sec": 1179,
   "lesson_id": "e750f12c-9432-49ed-af40-34ff0828b8ee",
   "run_at": "2026-07-17T16:05:41Z",
-  "funnel": {"stt_total": 367, "stt_kept": 33, "timestamps_total": 8, "timestamps_verified": 7},
+  "funnel": {
+    "stt_total": 367,
+    "stt_kept": 33,
+    "timestamps_total": 8,
+    "timestamps_verified": 7
+  },
   "note": "인용 문장이 문맥상 부자연스러움('앨범을 이렇게 이렇게 해서' 등) — whisper가 저볼륨 신호에서 그럴듯한 오인식을 만들었을 가능성 의심. [2026-07-17 확인] 이 405초 부근을 highpass+loudnorm 전처리로 재실행하니 원본에 없던 '앨범' 오인식이 새로 생성됨(원본 27초 지점 '이 애를' → 전처리 후 '이 앨범을') — 이 quote 자체가 오인식일 가능성이 실측으로 뒷받침됨. AUDIO_PREPROCESS_ENABLED는 기본 false로 유지, 절대 켜지 말 것. [2026-07-17 사람 검토 완료] 7건 중 6건이 hallucination, 1건만 confirmed — 이 영상은 저볼륨/원거리 마이크로 인해 whisper가 그럴듯하지만 실제와 다른 문장을 만들어내는 경향이 강함. 놓친 발언(413초 '꽉 잡아 라켓을')도 확인됨 — 검증 게이트가 진짜 발언을 폐기한 재현율 손실 사례.",
   "verified_feedbacks": [
-    {"sec": 405, "quote": "요건 근육이 이렇게 올라가요", "match_score": 1.0, "status": "hallucination", "correct_quote": "그대로 이렇게 온단말이야"},
-    {"sec": 408, "quote": "이 앨범을 이렇게 이렇게 해서 더 앞으로 가요", "match_score": 0.8, "status": "hallucination", "correct_quote": "얘를 펴서 이렇게 해서 간다", "suspect": "문맥상 '앨범'이 등장할 이유가 없음 — 2026-07-17 전처리 A/B로 오인식 재현 확인, 사람 검토로 확정"},
-    {"sec": 415, "quote": "팔에 힘을 빼고 그리운 방식으로 하나", "match_score": 1.0, "status": "hallucination", "correct_quote": "팔에 힘을 빼고 그립 어쩌고 (뒷부분 불명확)", "suspect": "'그리운 방식으로'가 코칭 발언으로 부자연스러움 — 앞부분('팔에 힘을 빼고')은 맞았으나 뒷부분이 오인식"},
-    {"sec": 420, "quote": "이렇게 해서 시간을 이렇게 평화하고 이렇게 올리잖아요", "match_score": 1.0, "status": "hallucination", "correct_quote": "스윙을 이렇게 펴가지고 올리잖아", "suspect": "'평화하고'가 부자연스러움"},
-    {"sec": 1032, "quote": "천천히 천천히", "match_score": 1.0, "status": "hallucination", "correct_quote": "(완전히 다른 말, 사용자가 구체 문장은 특정하지 않음)"},
-    {"sec": 1052, "quote": "앉아야지", "match_score": 1.0, "status": "confirmed"},
-    {"sec": 1054, "quote": "누가 밟아야 되는거지", "match_score": 1.0, "status": "hallucination", "correct_quote": "누가 발리를 그렇게 하냐"}
+    {
+      "sec": 405,
+      "quote": "요건 근육이 이렇게 올라가요",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "그대로 이렇게 온단말이야",
+      "moment_valid": true
+    },
+    {
+      "sec": 408,
+      "quote": "이 앨범을 이렇게 이렇게 해서 더 앞으로 가요",
+      "match_score": 0.8,
+      "status": "hallucination",
+      "correct_quote": "얘를 펴서 이렇게 해서 간다",
+      "suspect": "문맥상 '앨범'이 등장할 이유가 없음 — 2026-07-17 전처리 A/B로 오인식 재현 확인, 사람 검토로 확정",
+      "moment_valid": true
+    },
+    {
+      "sec": 415,
+      "quote": "팔에 힘을 빼고 그리운 방식으로 하나",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "팔에 힘을 빼고 그립 어쩌고 (뒷부분 불명확)",
+      "suspect": "'그리운 방식으로'가 코칭 발언으로 부자연스러움 — 앞부분('팔에 힘을 빼고')은 맞았으나 뒷부분이 오인식",
+      "moment_valid": true
+    },
+    {
+      "sec": 420,
+      "quote": "이렇게 해서 시간을 이렇게 평화하고 이렇게 올리잖아요",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "스윙을 이렇게 펴가지고 올리잖아",
+      "suspect": "'평화하고'가 부자연스러움",
+      "moment_valid": true
+    },
+    {
+      "sec": 1032,
+      "quote": "천천히 천천히",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "(완전히 다른 말, 사용자가 구체 문장은 특정하지 않음)",
+      "moment_valid": true
+    },
+    {
+      "sec": 1052,
+      "quote": "앉아야지",
+      "match_score": 1.0,
+      "status": "confirmed",
+      "moment_valid": true
+    },
+    {
+      "sec": 1054,
+      "quote": "누가 밟아야 되는거지",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "누가 발리를 그렇게 하냐",
+      "moment_valid": true
+    }
   ],
   "missed_feedbacks": [
-    {"sec": 413, "quote": "꽉 잡아 라켓을", "reason": "검증 게이트가 전사 미매칭으로 폐기했으나 사람 검토로 실제 발언임을 확인 — 재현율 손실 사례"}
+    {
+      "sec": 413,
+      "quote": "꽉 잡아 라켓을",
+      "reason": "검증 게이트가 전사 미매칭으로 폐기했으나 사람 검토로 실제 발언임을 확인 — 재현율 손실 사례"
+    }
   ]
 }

@@ -4,22 +4,105 @@
   "duration_sec": 3415,
   "lesson_id": "dd39871b-3d8b-4a73-a325-a91a5a1a6bc1",
   "run_at": "2026-07-16T19:23:43Z",
-  "funnel": {"stt_total": 858, "stt_kept": 121, "timestamps_total": 12, "timestamps_verified": 10, "cards_dropped": ["card2_cueing"]},
-  "note": "card2_cueing 폐기 사례 — 근거 인용('그리고 선생님 봉지아 왼손으로...')이 전사와 미매칭.",
+  "funnel": {
+    "stt_total": 858,
+    "stt_kept": 121,
+    "timestamps_total": 12,
+    "timestamps_verified": 10,
+    "cards_dropped": [
+      "card2_cueing"
+    ]
+  },
+  "note": "card2_cueing 폐기 사례 — 근거 인용('그리고 선생님 봉지아 왼손으로...')이 전사와 미매칭. [2026-07-19 사람 검토 완료] 10건 중 confirmed 1(1579초), ambiguous 1(860초, 단어는 맞으나 코칭 발언인지 잡담인지 불확실), 나머지 8건 hallucination. 다른 2개 영상과 동일하게 '구조는 비슷하나 핵심 명사/단어 오인식'형이 대부분(공→몸, 중심→분지, 완전 다른 문장도 다수).",
   "verified_feedbacks": [
-    {"sec": 860, "quote": "아니, 무거워", "match_score": 1.0, "status": "unreviewed"},
-    {"sec": 890, "quote": "스윙 해봐 그냥 스윙 빈 스윙 스트로프 쳐다를 생각하고", "match_score": 1.0, "status": "unreviewed", "suspect": "'스트로프'는 '스트로크' 오인식 의심"},
-    {"sec": 893, "quote": "그리고 선생님 봉지아 왼손으로 몸을 잡아", "match_score": 1.0, "status": "unreviewed", "suspect": "'봉지아'는 의미 불명 — 사람 이름 또는 오인식 의심"},
-    {"sec": 900, "quote": "아니 이 몸을 계속 잡고 잡아", "match_score": 1.0, "status": "unreviewed"},
-    {"sec": 910, "quote": "치고 자 안아", "match_score": 1.0, "status": "unreviewed"},
-    {"sec": 912, "quote": "움직여서 나한테 보여줘야 돼", "match_score": 1.0, "status": "unreviewed"},
-    {"sec": 1245, "quote": "휴게소에서 공 잡고\n이렇게 던져주고 쳐", "match_score": 1.0, "status": "unreviewed", "suspect": "'휴게소'는 문맥상 이상 — 오인식 의심"},
-    {"sec": 1265, "quote": "분지를 이렇게 딱 두고", "match_score": 1.0, "status": "unreviewed"},
-    {"sec": 1579, "quote": "짧아? 좀 더 길게 갈게", "match_score": 1.0, "status": "unreviewed"},
-    {"sec": 2508, "quote": "다리 안쪽으로", "match_score": 1.0, "status": "unreviewed"}
+    {
+      "sec": 860,
+      "quote": "아니, 무거워",
+      "match_score": 1.0,
+      "status": "ambiguous",
+      "note": "단어 자체는 정확하나 코칭 발언인지 잡담/배경음인지 불확실 — moment_valid 판단 보류",
+      "moment_valid": null
+    },
+    {
+      "sec": 890,
+      "quote": "스윙 해봐 그냥 스윙 빈 스윙 스트로프 쳐다를 생각하고",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "스윙 해봐 그냥 스윙. 빈 스윙 스트로크 친다고 생각하고",
+      "note": "거의 유사, '스트로프'→'스트로크' 오인식 정도로 경미",
+      "moment_valid": true
+    },
+    {
+      "sec": 893,
+      "quote": "그리고 선생님 봉지아 왼손으로 몸을 잡아",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "그리고 선생님 봐. 왼손으로 공을 잡아",
+      "note": "'봉지아'는 '봐'의 오인식, '몸'은 '공'의 오인식",
+      "moment_valid": true
+    },
+    {
+      "sec": 900,
+      "quote": "아니 이 몸을 계속 잡고 잡아",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "아니 공을 던지고 잡으라고",
+      "moment_valid": true
+    },
+    {
+      "sec": 910,
+      "quote": "치고 자 안아",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "치고. 자 하나",
+      "moment_valid": true
+    },
+    {
+      "sec": 912,
+      "quote": "움직여서 나한테 보여줘야 돼",
+      "match_score": 1.0,
+      "status": "confirmed",
+      "moment_valid": true
+    },
+    {
+      "sec": 1245,
+      "quote": "휴게소에서 공 잡고\n이렇게 던져주고 쳐",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "공쳤어. 선생님보고 왼손으로 공잡고 이렇게 던져주고 또 쳐",
+      "note": "'휴게소'는 '선생님보고'류 오인식으로 추정",
+      "moment_valid": true
+    },
+    {
+      "sec": 1265,
+      "quote": "분지를 이렇게 딱 두고",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "중심을 더 앞에 둬야지",
+      "moment_valid": true
+    },
+    {
+      "sec": 1579,
+      "quote": "짧아? 좀 더 길게 갈게",
+      "match_score": 1.0,
+      "status": "confirmed",
+      "moment_valid": true
+    },
+    {
+      "sec": 2508,
+      "quote": "다리 안쪽으로",
+      "match_score": 1.0,
+      "status": "hallucination",
+      "correct_quote": "(완전히 다른 문장, 사용자가 구체 텍스트는 특정하지 않음)",
+      "moment_valid": true
+    }
   ],
   "missed_feedbacks": [],
   "dropped_cards": [
-    {"key": "card2_cueing", "evidence": "그리고 선생님 봉지아 왼손으로 몸을 잡아\n치고 자 안아\n움직여서 나한테 보여줘야 돼", "reason": "전사 미매칭으로 폐기. 이름 오인식('봉지아')이 인용 매칭 실패의 원인일 가능성."}
+    {
+      "key": "card2_cueing",
+      "evidence": "그리고 선생님 봉지아 왼손으로 몸을 잡아\n치고 자 안아\n움직여서 나한테 보여줘야 돼",
+      "reason": "전사 미매칭으로 폐기. 이름 오인식('봉지아')이 인용 매칭 실패의 원인일 가능성 — 사람 검토로 확정('봉지아'는 '봐'의 오인식, 사람 이름 아님)."
+    }
   ]
 }

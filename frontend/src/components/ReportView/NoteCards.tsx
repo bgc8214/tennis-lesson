@@ -92,9 +92,12 @@ export function NoteCards({ report }: NoteCardsProps) {
               코치 큐잉
             </h3>
           </header>
-          <blockquote className="leading-relaxed text-gray-800 italic">
-            &ldquo;{report.card2_cueing}&rdquo;
-          </blockquote>
+          {/* 15문서 2-A: card2_cueing은 Pass B가 만든 취지 요약이지 코치
+              원문 인용이 아니다 — 따옴표+blockquote는 "코치가 이렇게
+              말했다"로 오인되기 쉬워 일반 문단으로 표시한다. */}
+          <p className="leading-relaxed text-gray-800">
+            {report.card2_cueing}
+          </p>
         </section>
       )}
 

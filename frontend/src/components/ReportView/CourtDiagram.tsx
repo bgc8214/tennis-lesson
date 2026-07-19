@@ -325,6 +325,10 @@ interface CourtDiagramProps {
   onSeek?: (sec: number) => void;
   selectedIndex?: number | null;
   onSelectIndex?: (index: number | null) => void;
+  /** 15문서 2-A: "low"/null이면 timestamps 출처(source==="timestamp") 항목의
+   * quote 원문을 숨기고 모먼트 내비게이션으로 전환한다. court 출처(관절
+   * 분석)는 별개 검증 체계라 이 판단에서 제외 — 계속 quote 그대로 노출. */
+  transcriptQuality?: "high" | "low" | null;
 }
 
 export function CourtDiagram({
@@ -334,7 +338,9 @@ export function CourtDiagram({
   onSeek,
   selectedIndex: controlledIndex,
   onSelectIndex,
+  transcriptQuality,
 }: CourtDiagramProps) {
+  const showQuote = transcriptQuality === "high";
   const [internalIndex, setInternalIndex] = useState<number | null>(null);
   const feedbackItems = useMemo(() => mergeFeedbackItems(timestamps, tactics), [timestamps, tactics]);
 
@@ -393,13 +399,18 @@ export function CourtDiagram({
     if (feedbackItems.length === 0) return null;
     return (
       <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
-        <h3 className="text-base font-bold text-gray-900 sm:text-lg">피드백 타임라인</h3>
+        <h3 className="text-base font-bold text-gray-900 sm:text-lg">
+          {showQuote ? "피드백 타임라인" : "🔊 코칭 구간 안내"}
+        </h3>
         <p className="mt-0.5 text-xs text-gray-500">
-          코치 피드백 ({feedbackItems.length}개) — 카드를 눌러 영상 이동
+          {showQuote
+            ? `코치 피드백 (${feedbackItems.length}개) — 카드를 눌러 영상 이동`
+            : `이 영상은 음성이 멀어 정확한 발언 대신 코칭 구간 중심으로 안내해요 (${feedbackItems.length}개) — 카드를 눌러 영상에서 직접 들어보세요`}
         </p>
         <ul className="mt-4 space-y-2">
           {feedbackItems.map((item: FeedbackItem, i: number) => {
             const mainText = item.tactic || item.label;
+            const hideQuote = item.source === "timestamp" && !showQuote;
             return (
               <li key={`${item.sec}-${i}`}>
                 <button
@@ -424,11 +435,20 @@ export function CourtDiagram({
                     </span>
                   </div>
                   <p className="mt-1 text-sm font-medium leading-snug text-gray-900">{mainText}</p>
-                  {item.quote && <p className="mt-1 text-xs italic text-gray-400">&ldquo;{item.quote}&rdquo;</p>}
-                  {item.fix && (
-                    <p className="mt-1 flex items-start gap-1 text-xs text-brand-700">
-                      <span className="shrink-0">→</span><span>{item.fix}</span>
+                  {hideQuote ? (
+                    <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-gray-400">
+                      <span aria-hidden>🔊</span>
+                      <span>이 구간에서 코칭이 있었어요 (AI 추정, 발언 내용은 영상에서 직접 확인)</span>
                     </p>
+                  ) : (
+                    <>
+                      {item.quote && <p className="mt-1 text-xs italic text-gray-400">&ldquo;{item.quote}&rdquo;</p>}
+                      {item.fix && (
+                        <p className="mt-1 flex items-start gap-1 text-xs text-brand-700">
+                          <span className="shrink-0">→</span><span>{item.fix}</span>
+                        </p>
+                      )}
+                    </>
                   )}
                 </button>
               </li>
@@ -514,6 +534,7 @@ export function CourtDiagram({
             const isActive = tacticIndex >= 0 && selectedIndex === tacticIndex;
             const mainText = item.tactic || item.label;
             const posLabel = getPositionLabel(item.position);
+            const hideQuote = item.source === "timestamp" && !showQuote;
 
             return (
               <li key={`${item.sec}-${i}`}>
@@ -551,14 +572,23 @@ export function CourtDiagram({
                     <p className="mt-1.5 text-xs text-gray-500">{posLabel}</p>
                   )}
                   <p className="mt-1 text-sm font-medium leading-snug text-gray-900">{mainText}</p>
-                  {item.quote && (
-                    <p className="mt-1 text-xs italic text-gray-400">&ldquo;{item.quote}&rdquo;</p>
-                  )}
-                  {item.fix && (
-                    <p className="mt-1 flex items-start gap-1 text-xs text-brand-700">
-                      <span className="shrink-0">→</span>
-                      <span>{item.fix}</span>
+                  {hideQuote ? (
+                    <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-gray-400">
+                      <span aria-hidden>🔊</span>
+                      <span>이 구간에서 코칭이 있었어요 (AI 추정, 발언 내용은 영상에서 직접 확인)</span>
                     </p>
+                  ) : (
+                    <>
+                      {item.quote && (
+                        <p className="mt-1 text-xs italic text-gray-400">&ldquo;{item.quote}&rdquo;</p>
+                      )}
+                      {item.fix && (
+                        <p className="mt-1 flex items-start gap-1 text-xs text-brand-700">
+                          <span className="shrink-0">→</span>
+                          <span>{item.fix}</span>
+                        </p>
+                      )}
+                    </>
                   )}
                 </button>
               </li>

@@ -5,8 +5,16 @@ confirmed/hallucination/ambiguous로 채워진 뒤에만 정확한 점수를 낸
 unreviewed 항목만 있는 파일은 "검토 대기" 경고로 표시하고 채점에서 제외한다.
 
 이 스크립트는 실시간으로 파이프라인을 재실행하지 않는다 — 골든셋 JSON에
-이미 기록된 결과를 사람이 검토한 라벨과 대조해 정밀도(precision)를 계산할
-뿐이다. 재현율(recall) 측정에는 missed_feedbacks[] 항목 수가 쓰인다.
+이미 기록된 결과를 사람이 검토한 라벨과 대조해 두 종류의 정밀도를 계산한다:
+
+  - quote precision: quote 원문이 실제 발언과 글자 단위로 일치하는가
+    (status: confirmed만 정답으로 카운트). "코치 말씀 인용" 제품의 KPI.
+  - moment precision (15문서 2-B): 그 sec에 실제 코치 피드백이 있었는가,
+    quote 정오와는 독립. hallucination이어도 correct_quote가 있으면(=실제
+    발언이 있었다는 뜻) moment_valid=true다. "코칭 모먼트 내비게이션"
+    제품의 KPI — 15문서 판정에 따라 이게 실제로 쓰이는 지표다.
+
+재현율(recall)은 quote 기준으로만 계산한다(missed_feedbacks[] 항목 수 사용).
 
 사용법:
     python scripts/eval_golden.py
@@ -57,6 +65,15 @@ def score_one(data: Dict[str, Any]) -> Dict[str, Any]:
         if total_real > 0:
             recall = round(confirmed / total_real, 3)
 
+    # 15문서 2-B: moment_valid — quote 정오와 독립적인 "이 순간에 실제
+    # 코칭이 있었는가" 라벨. 아직 채워지지 않은(None) 항목은 moment
+    # 채점에서 제외(unreviewed와 동일하게 취급).
+    moment_labeled = [fb for fb in feedbacks if fb.get("moment_valid") is not None]
+    moment_valid_count = sum(1 for fb in moment_labeled if fb.get("moment_valid") is True)
+    moment_precision = (
+        round(moment_valid_count / len(moment_labeled), 3) if moment_labeled else None
+    )
+
     return {
         "file": data.get("_file"),
         "video_id": data.get("video_id"),
@@ -68,22 +85,29 @@ def score_one(data: Dict[str, Any]) -> Dict[str, Any]:
         "missed": missed,
         "precision": precision,
         "recall": recall,
+        "moment_labeled": len(moment_labeled),
+        "moment_valid_count": moment_valid_count,
+        "moment_precision": moment_precision,
         "fully_reviewed": unreviewed == 0,
     }
 
 
 def print_report(scores: List[Dict[str, Any]]) -> None:
-    header = f"{'file':24} {'video_id':14} {'total':>5} {'검토대기':>8} {'confirmed':>9} {'환청':>5} {'놓침':>5} {'precision':>9} {'recall':>7}"
+    header = (
+        f"{'file':24} {'video_id':14} {'total':>5} {'검토대기':>8} {'confirmed':>9} "
+        f"{'환청':>5} {'놓침':>5} {'quote P':>8} {'recall':>7} {'moment P':>9}"
+    )
     print(header)
     print("-" * len(header))
     for s in scores:
         precision_str = f"{s['precision']:.3f}" if s["precision"] is not None else "-"
         recall_str = f"{s['recall']:.3f}" if s["recall"] is not None else "-"
+        moment_str = f"{s['moment_precision']:.3f}" if s["moment_precision"] is not None else "-"
         flag = "" if s["fully_reviewed"] else "  ⚠ 검토 미완료"
         print(
             f"{s['file']:24} {s['video_id'] or '?':14} {s['total']:>5} "
             f"{s['unreviewed']:>8} {s['confirmed']:>9} {s['hallucination']:>5} "
-            f"{s['missed']:>5} {precision_str:>9} {recall_str:>7}{flag}"
+            f"{s['missed']:>5} {precision_str:>8} {recall_str:>7} {moment_str:>9}{flag}"
         )
 
     reviewed_scores = [s for s in scores if s["fully_reviewed"] and s["total"] > 0]
@@ -97,7 +121,12 @@ def print_report(scores: List[Dict[str, Any]]) -> None:
     all_confirmed = sum(s["confirmed"] for s in reviewed_scores)
     all_reviewed = sum(s["confirmed"] + s["hallucination"] + s["ambiguous"] for s in reviewed_scores)
     overall_precision = round(all_confirmed / all_reviewed, 3) if all_reviewed else None
-    print(f"\n전체 정밀도(검토 완료 파일 기준): {overall_precision}")
+    print(f"\n전체 quote 정밀도(검토 완료 파일 기준): {overall_precision}")
+
+    all_moment_valid = sum(s["moment_valid_count"] for s in scores)
+    all_moment_labeled = sum(s["moment_labeled"] for s in scores)
+    overall_moment = round(all_moment_valid / all_moment_labeled, 3) if all_moment_labeled else None
+    print(f"전체 moment 정밀도(15문서 2-B, moment_valid 라벨 기준): {overall_moment}")
 
 
 def main() -> None:

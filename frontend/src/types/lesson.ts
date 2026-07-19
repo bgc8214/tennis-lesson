@@ -102,6 +102,13 @@ export interface AiContextNote {
   note: string;
 }
 
+/** 15문서 2-A: 인용(quote) 원문을 신뢰하고 노출해도 되는지 판단하는 등급.
+ * 골든셋 3건 사람 검토 결과 quote 정밀도 13~20%로 실증되어, 판정 로직 없이
+ * 모든 whisper/gemini 경로가 항상 "low"를 반환한다 — null은 구버전(마이그레이션
+ * 이전) 레슨이므로 이 역시 "신뢰 불가"로 취급할 것. "low"/null이면 quote 원문
+ * 대신 모먼트 내비게이션(시각+카테고리+AI 추정 라벨)으로 렌더링해야 함. */
+export type TranscriptQuality = "high" | "low" | null;
+
 export interface LessonReport {
   card1_problem: string | null;
   card2_cueing: string | null;
@@ -109,6 +116,7 @@ export interface LessonReport {
   keywords: string[];
   timestamps: LessonTimestamp[];
   ai_context?: AiContextNote[];
+  transcript_quality?: TranscriptQuality;
   full_summary: string | null;
   transcript_source: TranscriptSource;
   transcript_text?: string | null;
