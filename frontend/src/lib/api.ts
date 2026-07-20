@@ -12,9 +12,12 @@ import {
   type ApiSuccessResponse,
   type LessonAnalyzeRequest,
   type LessonAnalyzeResponse,
+  type LessonAnalyzeUploadRequest,
+  type LessonAnalyzeUploadResponse,
   type LessonDetail,
   type LessonSummary,
   type PaginatedResponse,
+  type SourceType,
 } from "@/types/lesson";
 import { getAccessToken, getSupabaseClient } from "@/lib/supabase";
 
@@ -79,6 +82,49 @@ export async function analyzeLesson(
   return res.data;
 }
 
+/** POST /api/v1/lessons/analyze-upload — 17문서 U-1.
+ * multipart/form-data. fetchWithAuth는 JSON 전용이라 여기서 직접 fetch한다
+ * (Content-Type을 지정하지 않아 브라우저가 boundary 포함 multipart로 설정하게 둠). */
+export async function analyzeLessonUpload(
+  payload: LessonAnalyzeUploadRequest,
+): Promise<LessonAnalyzeUploadResponse> {
+  const token = await getAccessToken();
+  const form = new FormData();
+  form.append("audio", payload.audio, "audio.m4a");
+  form.append("duration_sec", String(payload.duration_sec));
+  form.append("file_hash", payload.file_hash);
+  if (payload.title) form.append("title", payload.title);
+
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE_URL}/api/v1/lessons/analyze-upload`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  let parsed: unknown = null;
+  const text = await res.text();
+  if (text) {
+    try { parsed = JSON.parse(text); } catch { /* noop */ }
+  }
+
+  if (!res.ok) {
+    const errBody = parsed as ApiErrorResponse | null;
+    if (errBody?.error) {
+      throw new ApiCallError(errBody.error.message, {
+        status: res.status,
+        code: errBody.error.code,
+        details: errBody.error.details,
+      });
+    }
+    throw new ApiCallError(`HTTP ${res.status}`, { status: res.status });
+  }
+
+  return (parsed as ApiSuccessResponse<LessonAnalyzeUploadResponse>).data;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Supabase 직접 조회 (백엔드 불필요)
 // ─────────────────────────────────────────────────────────────────────
@@ -95,8 +141,10 @@ function rowToSummary(row: Record<string, unknown>): LessonSummary {
 
   return {
     lesson_id: row.id as string,
-    youtube_url: row.youtube_url as string,
-    youtube_video_id: row.youtube_video_id as string,
+    youtube_url: (row.youtube_url as string | null) ?? null,
+    youtube_video_id: (row.youtube_video_id as string | null) ?? null,
+    source_type: ((row.source_type as SourceType) ?? "youtube"),
+    file_hash: (row.file_hash as string | null) ?? null,
     title: (row.title as string | null) ?? null,
     lesson_date: (row.lesson_date as string | null) ?? null,
     thumbnail_url: (row.thumbnail_url as string | null) ?? null,
@@ -132,7 +180,7 @@ export async function getLessons(params: {
 
   let q = supabase
     .from("lessons")
-    .select("id, youtube_url, youtube_video_id, title, lesson_date, thumbnail_url, duration_sec, lesson_type, created_at, updated_at, lesson_reports(processing_status)")
+    .select("id, youtube_url, youtube_video_id, source_type, file_hash, title, lesson_date, thumbnail_url, duration_sec, lesson_type, created_at, updated_at, lesson_reports(processing_status)")
     .order("sort_date", { ascending: false })
     .order("created_at", { ascending: false })
     .range(offset, offset + limit);  // limit+1개 가져와서 has_more 판정
@@ -162,7 +210,7 @@ export async function getLesson(id: string): Promise<LessonDetail> {
 
   const { data, error } = await supabase
     .from("lessons")
-    .select("id, user_id, youtube_url, youtube_video_id, title, lesson_date, thumbnail_url, duration_sec, lesson_type, created_at, updated_at, lesson_reports(*)")
+    .select("id, user_id, youtube_url, youtube_video_id, source_type, file_hash, title, lesson_date, thumbnail_url, duration_sec, lesson_type, created_at, updated_at, lesson_reports(*)")
     .eq("id", id)
     .limit(1)
     .single();

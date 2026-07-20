@@ -50,9 +50,14 @@ export function LessonCard({
 
   const dateLabel = formatDate(lesson.lesson_date ?? lesson.created_at);
   const title = lesson.title?.trim() || "제목 없는 레슨";
-  const thumbnail =
-    lesson.thumbnail_url ||
-    `https://i.ytimg.com/vi/${lesson.youtube_video_id}/hqdefault.jpg`;
+  const isUpload = lesson.source_type === "upload";
+  // 업로드 레슨은 유튜브 썸네일이 없다 — thumbnail_url이 있으면 쓰고, 없으면 플레이스홀더.
+  const thumbnail = isUpload
+    ? lesson.thumbnail_url || null
+    : lesson.thumbnail_url ||
+      (lesson.youtube_video_id
+        ? `https://i.ytimg.com/vi/${lesson.youtube_video_id}/hqdefault.jpg`
+        : null);
   const isClickable =
     lesson.processing_status === "DONE" ||
     lesson.processing_status === "FAILED";
@@ -84,19 +89,30 @@ export function LessonCard({
     <article className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm transition-all hover:border-brand-300 hover:shadow-md">
       {/* 썸네일 */}
       <div className="relative aspect-video w-full overflow-hidden bg-gray-100">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={thumbnail}
-          alt={title}
-          loading="lazy"
-          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-        />
+        {thumbnail ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={thumbnail}
+            alt={title}
+            loading="lazy"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-brand-50 to-gray-100 text-4xl">
+            <span aria-hidden>🎾</span>
+          </div>
+        )}
         <div className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/40 to-transparent" />
         <span
           className={`absolute left-3 top-3 rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLE[lesson.processing_status]}`}
         >
           {STATUS_LABEL[lesson.processing_status]}
         </span>
+        {isUpload && (
+          <span className="absolute right-3 top-3 rounded-full bg-black/60 px-2.5 py-1 text-xs font-semibold text-white backdrop-blur">
+            📁 업로드
+          </span>
+        )}
       </div>
 
       {/* 본문 */}

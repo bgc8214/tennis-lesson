@@ -5,6 +5,9 @@
 
 export type ProcessingStatus = "PENDING" | "PROCESSING" | "DONE" | "FAILED";
 
+/** 17문서 U-1: 레슨 소스 유형. youtube(링크 분석) | upload(영상 파일 직접 업로드) */
+export type SourceType = "youtube" | "upload";
+
 export type TranscriptSource =
   | "YOUTUBE_CAPTION"
   | "WHISPER_STT"
@@ -138,8 +141,11 @@ export interface LessonReport {
 
 export interface LessonSummary {
   lesson_id: string;
-  youtube_url: string;
-  youtube_video_id: string;
+  // 17문서 U-1: 업로드 레슨은 유튜브 링크가 없으므로 nullable.
+  youtube_url: string | null;
+  youtube_video_id: string | null;
+  source_type: SourceType;
+  file_hash?: string | null;
   title: string | null;
   lesson_date: string | null;
   thumbnail_url: string | null;
@@ -161,6 +167,20 @@ export interface LessonAnalyzeResponse {
   lesson_id: string;
   processing_status: ProcessingStatus;
   youtube_video_id: string;
+  created_at: string;
+}
+
+/** 17문서 U-1: POST /lessons/analyze-upload 요청/응답 */
+export interface LessonAnalyzeUploadRequest {
+  audio: Blob;
+  title?: string;
+  duration_sec: number;
+  file_hash: string;
+}
+
+export interface LessonAnalyzeUploadResponse {
+  lesson_id: string;
+  processing_status: ProcessingStatus;
   created_at: string;
 }
 
