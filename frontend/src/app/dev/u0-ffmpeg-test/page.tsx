@@ -110,8 +110,8 @@ export default function U0FfmpegTestPage() {
         return;
       }
 
-      const { fetchFile } = await import("@ffmpeg/util");
-      const inputName = "input" + (file.name.match(/\.[a-z0-9]+$/i)?.[0] ?? ".mp4");
+      const { FFFSType } = await import("@ffmpeg/ffmpeg");
+      const mountDir = "/input_mount";
       const outputName = "output.m4a";
 
       setPhase("extracting");
@@ -119,27 +119,33 @@ export default function U0FfmpegTestPage() {
 
       const t0 = performance.now();
       try {
-        await ffmpeg.writeFile(inputName, await fetchFile(file));
+        // fetchFile()+writeFile()은 파일 전체를 메모리(ArrayBuffer)로 복사한다 —
+        // 6GB급 파일에서 FileReader가 실패(U-0 1차 실측으로 확인). WORKERFS
+        // 마운트는 File 객체를 가상 FS에 스트리밍으로 노출해 메모리 복사가 없다.
+        await ffmpeg.createDir(mountDir);
+        await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, mountDir);
 
-        // 1차: demux 우선 (재인코딩 없음, 17문서 2-1)
         let copyOk = true;
         let reencodeUsed = false;
         try {
-          await ffmpeg.exec(["-i", inputName, "-vn", "-acodec", "copy", outputName]);
+          await ffmpeg.exec(["-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "copy", outputName]);
         } catch {
           copyOk = false;
         }
 
-        // demux 실패 시 재인코딩 폴백
         if (!copyOk) {
           reencodeUsed = true;
           setProgressMsg("demux 실패 → aac 재인코딩 폴백 중...");
-          await ffmpeg.exec(["-i", inputName, "-vn", "-acodec", "aac", "-b:a", "128k", outputName]);
+          await ffmpeg.exec([
+            "-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "aac", "-b:a", "128k", outputName,
+          ]);
         }
 
         const extractMs = performance.now() - t0;
         const data = await ffmpeg.readFile(outputName);
         const outputSizeMB = (data as Uint8Array).byteLength / (1024 * 1024);
+
+        await ffmpeg.unmount(mountDir);
 
         setResult({
           fileName: file.name,
