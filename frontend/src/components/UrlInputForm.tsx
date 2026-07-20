@@ -2,12 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { analyzeLesson, getLesson } from "@/lib/api";
+import { analyzeLesson, analyzeLessonUpload, getLesson } from "@/lib/api";
 import { getSupabaseClient } from "@/lib/supabase";
 import { ApiCallError } from "@/types/lesson";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useToast } from "@/components/ui/Toast";
 import { useAnalysisTracker } from "@/lib/AnalysisTracker";
+import {
+  extractAudioFromVideo,
+  probeVideoDuration,
+  sha256Hex,
+} from "@/lib/extractAudio";
 
 const ANALYSIS_MESSAGES = [
   "AI가 레슨을 분석 중입니다...",
@@ -52,11 +57,18 @@ function RecordingGuide() {
   );
 }
 
+type InputMode = "youtube" | "upload";
+type UploadPhase = "idle" | "extracting" | "uploading";
+
 export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
+  const [mode, setMode] = useState<InputMode>("youtube");
   const [url, setUrl] = useState("");
   const [analyzeCourt, setAnalyzeCourt] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [messageIndex, setMessageIndex] = useState(0);
+  // 파일 업로드 상태 머신
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
+  const [uploadMsg, setUploadMsg] = useState("");
   const router = useRouter();
   const toast = useToast();
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -194,8 +206,134 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
     }
   };
 
+  const handleFile = useCallback(
+    async (file: File) => {
+      if (isLoading) return;
+      setIsLoading(true);
+      setUploadPhase("extracting");
+      setUploadMsg("영상 길이 확인 중...");
+
+      try {
+        const durationSec = await probeVideoDuration(file);
+
+        const extracted = await extractAudioFromVideo(file, (p) => {
+          setUploadPhase("extracting");
+          setUploadMsg(
+            p.phase === "loading-ffmpeg"
+              ? "오디오 추출 도구 준비 중..."
+              : "영상에서 소리만 추출하는 중...",
+          );
+        });
+
+        setUploadPhase("uploading");
+        setUploadMsg("분석 서버로 소리만 전송 중...");
+        const fileHash = await sha256Hex(extracted.data);
+        const audioBlob = new Blob([extracted.data.buffer as ArrayBuffer], { type: "audio/mp4" });
+
+        const res = await analyzeLessonUpload({
+          audio: audioBlob,
+          title: file.name.replace(/\.[^/.]+$/, ""),
+          duration_sec: Math.round(durationSec ?? 0),
+          file_hash: fileHash,
+        });
+
+        setIsLoading(false);
+        setUploadPhase("idle");
+        tracker.track(res.lesson_id, null);
+        onAnalyzed?.(res.lesson_id);
+        router.push(`/lessons/${res.lesson_id}`);
+      } catch (err) {
+        setIsLoading(false);
+        setUploadPhase("idle");
+        setUploadMsg("");
+        if (err instanceof ApiCallError) {
+          if (err.code === "LESSON_ALREADY_EXISTS") {
+            const existingId = err.details?.existing_lesson_id as string | undefined;
+            if (existingId) {
+              toast.show("이미 분석된 영상으로 이동합니다.", "info");
+              router.push(`/lessons/${existingId}`);
+              return;
+            }
+          }
+          toast.show(err.message, "error");
+        } else {
+          toast.show(
+            "이 형식은 지원하지 않아요. 다른 영상이나 유튜브 링크를 이용해주세요.",
+            "error",
+          );
+        }
+      }
+    },
+    [isLoading, onAnalyzed, router, toast, tracker],
+  );
+
   return (
-    <form onSubmit={handleSubmit} className="w-full max-w-2xl mx-auto">
+    <div className="w-full max-w-2xl mx-auto">
+      {/* 17문서 U-1: 입력 방식 탭 */}
+      <div className="mb-4 flex justify-center">
+        <div className="inline-flex rounded-xl bg-gray-100 p-1">
+          {(["youtube", "upload"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => !isLoading && setMode(m)}
+              disabled={isLoading}
+              className={[
+                "rounded-lg px-4 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed",
+                mode === m ? "bg-white text-brand-600 shadow-sm" : "text-gray-500 hover:text-gray-700",
+              ].join(" ")}
+            >
+              {m === "youtube" ? "유튜브 링크" : "영상 파일"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {mode === "youtube" ? (
+        <YoutubeTab
+          url={url}
+          setUrl={setUrl}
+          isLoading={isLoading}
+          analyzeCourt={analyzeCourt}
+          setAnalyzeCourt={setAnalyzeCourt}
+          onSubmit={handleSubmit}
+          messageIndex={messageIndex}
+        />
+      ) : (
+        <UploadTab
+          isLoading={isLoading}
+          uploadPhase={uploadPhase}
+          uploadMsg={uploadMsg}
+          onFile={handleFile}
+        />
+      )}
+
+      {!isLoading && <RecordingGuide />}
+    </div>
+  );
+}
+
+interface YoutubeTabProps {
+  url: string;
+  setUrl: (v: string) => void;
+  isLoading: boolean;
+  analyzeCourt: boolean;
+  setAnalyzeCourt: (v: boolean) => void;
+  onSubmit: (e: React.FormEvent) => void;
+  messageIndex: number;
+}
+
+function YoutubeTab({
+  url,
+  setUrl,
+  isLoading,
+  analyzeCourt,
+  setAnalyzeCourt,
+  onSubmit,
+  messageIndex,
+}: YoutubeTabProps) {
+  return (
+    <form onSubmit={onSubmit}>
       <div className="relative">
         <input
           type="url"
@@ -234,8 +372,6 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
         </label>
       </div>
 
-      {!isLoading && <RecordingGuide />}
-
       {isLoading && (
         <div className="mt-4 flex items-center justify-center gap-3 text-sm text-gray-600 animate-fade-in">
           <span className="inline-block h-2 w-2 rounded-full bg-brand-500 animate-pulse-slow" />
@@ -243,5 +379,65 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
         </div>
       )}
     </form>
+  );
+}
+
+interface UploadTabProps {
+  isLoading: boolean;
+  uploadPhase: UploadPhase;
+  uploadMsg: string;
+  onFile: (file: File) => void;
+}
+
+function UploadTab({ isLoading, uploadPhase, uploadMsg, onFile }: UploadTabProps) {
+  return (
+    <div>
+      <label
+        className={[
+          "flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-8 text-center transition-colors",
+          isLoading
+            ? "border-gray-200 bg-gray-50 cursor-not-allowed"
+            : "border-gray-300 bg-white hover:border-brand-400 hover:bg-brand-50/30",
+        ].join(" ")}
+      >
+        <span className="text-3xl" aria-hidden>🎾</span>
+        <span className="text-base font-semibold text-gray-800">
+          레슨 영상 파일 선택
+        </span>
+        <span className="text-sm text-gray-500">
+          영상을 고르면 브라우저에서 소리만 추출해 분석해요
+        </span>
+        <input
+          type="file"
+          accept="video/*"
+          disabled={isLoading}
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onFile(file);
+            // 같은 파일 재선택 허용
+            e.target.value = "";
+          }}
+        />
+      </label>
+
+      {/* 2-4(A) 안내 문구 고정 노출 */}
+      <div className="mt-3 space-y-1 text-center text-xs text-gray-500">
+        <p>🔒 영상은 서버로 전송되지 않고, 소리만 분석에 사용돼요.</p>
+        <p>👥 코치님·친구와 영상까지 공유하려면 유튜브 링크로 분석하세요.</p>
+      </div>
+
+      {isLoading && (
+        <div className="mt-4 flex items-center justify-center gap-3 text-sm text-gray-600 animate-fade-in">
+          <LoadingSpinner size="sm" />
+          <span aria-live="polite">
+            {uploadMsg ||
+              (uploadPhase === "extracting"
+                ? "영상에서 소리만 추출하는 중..."
+                : "분석 서버로 전송 중...")}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }

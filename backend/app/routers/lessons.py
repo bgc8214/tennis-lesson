@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import tempfile
 from datetime import date as date_cls
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -18,10 +21,13 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    File,
+    Form,
     HTTPException,
     Path,
     Query,
     Response,
+    UploadFile,
     status,
 )
 
@@ -31,6 +37,11 @@ from app.database import get_supabase_client
 from app.models.lesson import (
     LessonAnalyzeRequest,
 )
+
+# 17문서 U-1: 업로드 오디오 파일 크기 상한 (추출된 오디오는 원본 영상보다 훨씬 작음)
+UPLOAD_MAX_AUDIO_BYTES = 500 * 1024 * 1024  # 500MB
+# UploadFile → 임시파일 스트리밍 복사 시 청크 크기 (메모리 통복사 방지)
+_UPLOAD_COPY_CHUNK_BYTES = 4 * 1024 * 1024  # 4MB
 from app.models.report import (
     CoachCommentRequest,
     QuickNoteUpdateRequest,
@@ -61,6 +72,9 @@ def _serialize_lesson_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "lesson_id": row.get("id"),
         "youtube_url": row.get("youtube_url"),
         "youtube_video_id": row.get("youtube_video_id"),
+        # 17문서 U-1: 소스 유형 분기. 구버전 행은 컬럼 기본값 'youtube'.
+        "source_type": row.get("source_type") or "youtube",
+        "file_hash": row.get("file_hash"),
         "title": row.get("title"),
         "lesson_date": row.get("lesson_date"),
         "thumbnail_url": row.get("thumbnail_url"),
@@ -106,6 +120,33 @@ def _serialize_report(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]
 # ─────────────────────────────────────────────────────────────────────
 # 진행 상태 헬퍼
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _ensure_credits(sb, user_id: str) -> None:
+    """로그인 유저의 크레딧을 확인하고 부족하면 402. 익명 유저는 통과.
+
+    최초 이용 유저는 크레딧 행이 없으므로 3크레딧으로 생성한다.
+    조회 자체가 실패하면(업스트림 오류) 분석을 막지 않고 통과시킨다.
+    """
+    from app.auth import ANONYMOUS_USER_ID
+    if user_id == ANONYMOUS_USER_ID:
+        return
+    try:
+        credit_res = sb.table("user_credits").select("credits").eq("user_id", user_id).limit(1).execute()
+        if not credit_res.data:
+            sb.table("user_credits").insert({"user_id": user_id, "credits": 3}).execute()
+            credits = 3
+        else:
+            credits = credit_res.data[0]["credits"]
+        if credits <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=_err("INSUFFICIENT_CREDITS", "크레딧이 부족합니다. 충전 후 이용해주세요."),
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("credit check failed (skipping): %s", e)
 
 
 def _update_progress(sb, lesson_id: str, step: int, message: str, now_fn) -> None:
@@ -307,6 +348,118 @@ def _run_analysis_pipeline(lesson_id: str, youtube_url: str, analyze_court: bool
 
 
 # ─────────────────────────────────────────────────────────────────────
+# 17문서 U-1: 업로드 오디오 분석 백그라운드 작업
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _run_upload_analysis_pipeline(lesson_id: str, audio_path: str) -> None:
+    """직접 업로드된 오디오 파일에 대한 분석 파이프라인.
+
+    유튜브 경로(_run_analysis_pipeline)와 상태 전이(PENDING → PROCESSING →
+    DONE|FAILED)·저장 필드는 동일하나, 차이는:
+      - yt-dlp 다운로드 없음 (오디오는 이미 audio_path에 있음)
+      - whisper 검증 파이프라인만 사용 (gemini/gemini-youtube 엔진은 youtube_url 전제)
+      - yt-dlp 메타 보강 없음 (title은 업로드 시 이미 저장), court 분석 없음
+      - 종료 시 임시 오디오 파일 삭제
+    """
+    sb = get_supabase_client()
+    settings = get_settings()
+    now = lambda: datetime.now(timezone.utc).isoformat()
+
+    try:
+        # 1) PROCESSING 전이
+        try:
+            sb.table("lessons").update({"updated_at": now()}).eq("id", lesson_id).execute()
+            sb.table("lesson_reports").update(
+                {"processing_status": "PROCESSING", "updated_at": now()}
+            ).eq("lesson_id", lesson_id).execute()
+        except Exception as e:
+            logger.warning("[%s] failed to mark PROCESSING: %s", lesson_id, e)
+
+        # 2) 업로드 오디오 → whisper 검증 파이프라인
+        try:
+            report = gemini_service.generate_lesson_report_whisper_from_upload(
+                audio_path,
+                on_progress=lambda step, msg: _update_progress(sb, lesson_id, step, msg, now),
+            )
+        except Exception as e:
+            logger.error("[%s] upload analysis failed: %s", lesson_id, e)
+            try:
+                sb.table("lesson_reports").update(
+                    {
+                        "processing_status": "FAILED",
+                        "transcript_source": "WHISPER_STT",
+                        "error_message": f"업로드 분석 실패: {e}",
+                        "progress_message": None,
+                        "progress_step": 0,
+                        "updated_at": now(),
+                        "completed_at": now(),
+                    }
+                ).eq("lesson_id", lesson_id).execute()
+            except Exception as e2:
+                logger.error("[%s] failed to write FAILED state: %s", lesson_id, e2)
+            return
+
+        # 3) 정상 완료 저장 (유튜브 경로 DONE 저장과 동일 필드)
+        try:
+            sb.table("lesson_reports").update(
+                {
+                    "card1_problem": report.get("card1_problem"),
+                    "card2_cueing": report.get("card2_cueing"),
+                    "card3_action": report.get("card3_action"),
+                    "full_summary": report.get("full_summary"),
+                    "keywords": report.get("keywords") or [],
+                    "steps": report.get("steps") or [],
+                    "scenarios": report.get("scenarios") or [],
+                    "timestamps": report.get("timestamps") or [],
+                    "ai_context": report.get("ai_context") or [],
+                    "transcript_quality": report.get("transcript_quality"),
+                    "stt_stats": report.get("stt_stats"),
+                    "verification": report.get("verification"),
+                    "transcript_source": "WHISPER_STT",
+                    "gemini_model": report.get("gemini_model") or settings.GEMINI_MODEL,
+                    "processing_status": "DONE",
+                    "error_message": None,
+                    "progress_message": None,
+                    "progress_step": 4,
+                    "updated_at": now(),
+                    "completed_at": now(),
+                }
+            ).eq("lesson_id", lesson_id).execute()
+
+            # lesson_type만 갱신 (업로드는 yt-dlp 메타 보강 대상 아님)
+            try:
+                sb.table("lessons").update(
+                    {"lesson_type": report.get("lesson_type") or [], "updated_at": now()}
+                ).eq("id", lesson_id).execute()
+            except Exception as e:
+                logger.warning("[%s] lesson_type update failed: %s", lesson_id, e)
+        except Exception as e:
+            logger.error("[%s] failed to save DONE state: %s", lesson_id, e)
+            return
+
+        # 4) 크레딧 차감 (로그인 유저만)
+        from app.auth import ANONYMOUS_USER_ID
+        lesson_row = sb.table("lessons").select("user_id").eq("id", lesson_id).limit(1).execute()
+        lesson_user_id = (lesson_row.data or [{}])[0].get("user_id")
+        if lesson_user_id and lesson_user_id != ANONYMOUS_USER_ID:
+            try:
+                sb.rpc("decrement_credits", {"p_user_id": lesson_user_id, "p_lesson_id": lesson_id}).execute()
+            except Exception as e:
+                logger.warning("[%s] credit deduction failed: %s", lesson_id, e)
+    finally:
+        # 5) 임시 오디오 파일/디렉토리 정리
+        try:
+            parent = os.path.dirname(audio_path)
+            if parent and os.path.isdir(parent) and os.path.basename(parent).startswith("tennis-upload-"):
+                shutil.rmtree(parent, ignore_errors=True)
+            elif os.path.exists(audio_path):
+                os.remove(audio_path)
+        except Exception as e:
+            logger.warning("[%s] temp audio cleanup failed: %s", lesson_id, e)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Background court analysis task (separate trigger)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -377,25 +530,7 @@ def analyze_lesson(
     youtube_url = str(payload.youtube_url)
 
     # 0) 크레딧 체크 (로그인 유저만)
-    from app.auth import ANONYMOUS_USER_ID
-    if user_id != ANONYMOUS_USER_ID:
-        try:
-            credit_res = sb.table("user_credits").select("credits").eq("user_id", user_id).limit(1).execute()
-            if not credit_res.data:
-                # 크레딧 행이 없으면 생성 (3크레딧)
-                sb.table("user_credits").insert({"user_id": user_id, "credits": 3}).execute()
-                credits = 3
-            else:
-                credits = credit_res.data[0]["credits"]
-            if credits <= 0:
-                raise HTTPException(
-                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail=_err("INSUFFICIENT_CREDITS", "크레딧이 부족합니다. 충전 후 이용해주세요."),
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning("credit check failed (skipping): %s", e)
+    _ensure_credits(sb, user_id)
 
     # 1) video_id 추출 검증
     try:
@@ -563,6 +698,178 @@ def analyze_lesson(
     }
 
 
+@router.post("/analyze-upload", status_code=status.HTTP_202_ACCEPTED)
+def analyze_lesson_upload(
+    background_tasks: BackgroundTasks,
+    audio: UploadFile = File(..., description="클라이언트에서 추출한 오디오 파일"),
+    duration_sec: int = Form(..., description="원본 영상 길이(초)"),
+    file_hash: str = Form(..., description="추출 오디오 SHA-256 해시 (중복 방지)"),
+    title: Optional[str] = Form(default=None),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """17문서 U-1: 유튜브 링크 없이, 클라이언트가 브라우저(FFmpeg.wasm)에서
+    추출한 오디오만 업로드받아 분석 작업을 큐잉한다. 즉시 202 + lesson_id 반환.
+
+    영상 원본은 서버로 전송되지 않는다 — 오디오만 수신하고, 분석 후 임시 파일도 삭제.
+    """
+    settings = get_settings()
+    sb = get_supabase_client()
+
+    # 0) 크레딧 체크 (로그인 유저만)
+    _ensure_credits(sb, user_id)
+
+    # 1) 입력 검증
+    file_hash = (file_hash or "").strip()
+    if not file_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_err("VALIDATION_ERROR", "file_hash가 비어 있습니다."),
+        )
+    if duration_sec is None or duration_sec <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_err("VALIDATION_ERROR", "duration_sec가 올바르지 않습니다.",
+                        details={"duration_sec": duration_sec}),
+        )
+
+    # 2) 영상 길이 가드 (유튜브 경로와 동일 한도 재사용 — 범용 길이 제한)
+    if settings.YTDLP_MAX_DURATION_SEC > 0 and duration_sec > settings.YTDLP_MAX_DURATION_SEC:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_err(
+                "VIDEO_TOO_LONG",
+                "영상 길이가 한도를 초과합니다.",
+                details={"duration_sec": duration_sec, "limit": settings.YTDLP_MAX_DURATION_SEC},
+            ),
+        )
+
+    # 3) file_hash 기준 동일 user 중복 차단 (유튜브 video_id 중복 체크와 대칭)
+    try:
+        existing = (
+            sb.table("lessons")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("file_hash", file_hash)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_err(
+                    "LESSON_ALREADY_EXISTS",
+                    "이미 분석된 영상입니다.",
+                    details={"existing_lesson_id": existing.data[0]["id"], "file_hash": file_hash},
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("upload duplicate check failed (skipping): %s", e)
+
+    # 4) 오디오 파일을 임시 디렉토리에 스트리밍 저장 (메모리 통복사 금지)
+    tmp_dir = tempfile.mkdtemp(prefix="tennis-upload-")
+    _, ext = os.path.splitext(audio.filename or "")
+    if not ext or len(ext) > 6:
+        ext = ".m4a"
+    audio_path = os.path.join(tmp_dir, f"upload{ext}")
+    total = 0
+    try:
+        with open(audio_path, "wb") as out:
+            while True:
+                chunk = audio.file.read(_UPLOAD_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > UPLOAD_MAX_AUDIO_BYTES:
+                    out.close()
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=_err(
+                            "FILE_TOO_LARGE",
+                            "오디오 파일이 너무 큽니다.",
+                            details={"limit_bytes": UPLOAD_MAX_AUDIO_BYTES},
+                        ),
+                    )
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.exception("upload audio save failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_err("INTERNAL_ERROR", "오디오 파일 저장에 실패했습니다.", details={"reason": str(e)}),
+        )
+    finally:
+        try:
+            audio.file.close()
+        except Exception:
+            pass
+
+    if total == 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_err("VALIDATION_ERROR", "오디오 파일이 비어 있습니다."),
+        )
+
+    # 5) lessons + lesson_reports 레코드 생성 (source_type='upload')
+    lesson_insert = {
+        "user_id": user_id,
+        "youtube_url": None,
+        "youtube_video_id": None,
+        "source_type": "upload",
+        "file_hash": file_hash,
+        "title": (title or "").strip() or None,
+        "duration_sec": duration_sec,
+    }
+    try:
+        ins = sb.table("lessons").insert(lesson_insert).execute()
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.exception("upload lesson insert failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "Supabase 저장에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    if not ins.data:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_err("INTERNAL_ERROR", "레슨 생성 응답이 비어 있습니다."),
+        )
+
+    lesson_row = ins.data[0]
+    lesson_id = lesson_row["id"]
+
+    try:
+        sb.table("lesson_reports").insert(
+            {
+                "lesson_id": lesson_id,
+                "processing_status": "PENDING",
+                "transcript_source": "UNKNOWN",
+                "keywords": [],
+                "timestamps": [],
+            }
+        ).execute()
+    except Exception as e:
+        logger.warning("report shell insert failed: %s", e)
+
+    # 6) 백그라운드 분석 트리거 (임시 오디오 경로 전달 — 종료 시 파이프라인이 정리)
+    background_tasks.add_task(_run_upload_analysis_pipeline, lesson_id, audio_path)
+
+    return {
+        "data": {
+            "lesson_id": lesson_id,
+            "processing_status": "PENDING",
+            "created_at": lesson_row.get("created_at"),
+        }
+    }
+
+
 @router.get("")
 def list_lessons(
     limit: int = Query(default=20, ge=1, le=50),
@@ -584,7 +891,8 @@ def list_lessons(
         q = (
             sb.table("lessons")
             .select(
-                "id, youtube_url, youtube_video_id, title, lesson_date, "
+                "id, youtube_url, youtube_video_id, source_type, file_hash, "
+                "title, lesson_date, "
                 "thumbnail_url, duration_sec, lesson_type, created_at, updated_at, "
                 "lesson_reports(processing_status)"
             )
@@ -656,7 +964,8 @@ def get_lesson(
         res = (
             sb.table("lessons")
             .select(
-                "id, user_id, youtube_url, youtube_video_id, title, lesson_date, "
+                "id, user_id, youtube_url, youtube_video_id, source_type, file_hash, "
+                "title, lesson_date, "
                 "thumbnail_url, duration_sec, lesson_type, created_at, updated_at, "
                 "lesson_reports(*)"
             )

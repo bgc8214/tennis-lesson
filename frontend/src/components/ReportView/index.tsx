@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { LessonDetail } from "@/types/lesson";
 import { VideoPlayer } from "./VideoPlayer";
+import { LocalVideoPlayer } from "./LocalVideoPlayer";
 import { NoteCards } from "./NoteCards";
 import { ShareButtons } from "./ShareButtons";
 import { CourtDiagram } from "./CourtDiagram";
@@ -34,12 +35,16 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:gap-8">
       {/* 좌측: 비디오만 sticky */}
       <div className="lg:sticky lg:top-24 lg:self-start">
-        <VideoPlayer
-          youtubeUrl={lesson.youtube_url}
-          youtubeVideoId={lesson.youtube_video_id}
-          startSec={startSec}
-          requestedSec={requestedSec}
-        />
+        {lesson.source_type === "upload" ? (
+          <LocalVideoPlayer startSec={startSec} requestedSec={requestedSec} />
+        ) : (
+          <VideoPlayer
+            youtubeUrl={lesson.youtube_url ?? ""}
+            youtubeVideoId={lesson.youtube_video_id ?? ""}
+            startSec={startSec}
+            requestedSec={requestedSec}
+          />
+        )}
       </div>
 
       {/* 우측: 3단 카드 + 코트 전술(피드백 목록 통합) + 공유 */}
@@ -71,4 +76,4 @@ export function ReportView({ lesson, startSec }: ReportViewProps) {
   );
 }
 
-export { VideoPlayer, NoteCards, ShareButtons, CourtDiagram, QuickNote };
+export { VideoPlayer, LocalVideoPlayer, NoteCards, ShareButtons, CourtDiagram, QuickNote };
