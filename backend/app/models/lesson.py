@@ -10,6 +10,9 @@ from app.models.report import LessonReport
 
 ProcessingStatus = Literal["PENDING", "PROCESSING", "DONE", "FAILED"]
 
+# 17문서 U-1: 레슨 소스 유형. youtube(링크 분석) | upload(영상 파일 직접 업로드)
+SourceType = Literal["youtube", "upload"]
+
 # Gemini가 분류 가능한 레슨 카테고리 화이트리스트.
 # (gemini_service.ALLOWED_LESSON_TYPES와 동기화 유지할 것)
 LessonType = Literal[
@@ -37,12 +40,26 @@ class LessonAnalyzeResponse(BaseModel):
     created_at: datetime
 
 
+class LessonAnalyzeUploadResponse(BaseModel):
+    """POST /api/v1/lessons/analyze-upload 응답 (202 Accepted).
+
+    17문서 U-1: 업로드 레슨은 youtube_video_id가 없으므로 별도 응답 모델.
+    """
+
+    lesson_id: UUID
+    processing_status: ProcessingStatus
+    created_at: datetime
+
+
 class LessonSummary(BaseModel):
     """목록 조회용 가벼운 메타."""
 
     lesson_id: UUID
-    youtube_url: str
+    # 17문서 U-1: 업로드 레슨은 youtube_url이 없으므로 Optional로 완화.
+    youtube_url: Optional[str] = None
     youtube_video_id: Optional[str] = None
+    source_type: SourceType = "youtube"
+    file_hash: Optional[str] = None
     title: Optional[str] = None
     lesson_date: Optional[date] = None
     thumbnail_url: Optional[str] = None

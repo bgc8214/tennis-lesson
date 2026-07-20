@@ -1386,10 +1386,11 @@ def generate_lesson_report_whisper(
        미매칭 timestamp 폐기 / sec 재계산 — 검증된 사실만 Pass B로 전달
     5) Pass B: 검증된 피드백 목록만 보고 card1/2/3 + steps/scenarios 종합
        (Pass B는 이미 검증된 입력만 다루므로 별도 검증 불필요)
-    """
-    from app.services import stt_providers, verification
-    from app.services.stt_filters import segments_to_transcript_text, split_segments_into_windows
 
+    2)~5)는 _generate_report_from_audio_path로 분리되어 유튜브 경로와
+    17문서 U-1 직접 업로드 경로(generate_lesson_report_whisper_from_upload)가
+    완전히 공유한다. 이 함수의 유일한 책임은 1) yt-dlp 다운로드.
+    """
     settings = get_settings()
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -1411,23 +1412,71 @@ def generate_lesson_report_whisper(
         _notify(1, "🎵 오디오 다운로드 중... (1/3)")
         logger.info("[whisper] 오디오 다운로드 중...")
         audio_path = _download_full_audio(youtube_url, tmp_dir)
-        duration = _get_duration(audio_path)
-        logger.info("[whisper] 오디오 길이: %.0f초", duration)
+        # audio_path는 tmp_dir 안에 있으므로 파일을 읽는 STT까지 이 블록 안에서 수행.
+        return _generate_report_from_audio_path(audio_path, on_progress)
 
-        # 2) STT 전사 (환청 필터 포함)
-        _notify(2, "🎙️ 음성 인식 중... (2/3) — 시간이 걸릴 수 있습니다")
-        segments, stt_stats = stt_providers.transcribe_audio(
-            audio_path,
-            on_progress=lambda msg: _notify(2, f"🎙️ {msg} (2/3)"),
-        )
-        if not segments:
-            raise RuntimeError("전사 결과가 비어 있습니다 (발화 없음 또는 전부 환청 필터링됨)")
 
-        transcript_text = segments_to_transcript_text(segments)
-        logger.info(
-            "[whisper] 전사 완료: %d 세그먼트 (provider=%s)",
-            len(segments), stt_stats.get("provider"),
-        )
+def generate_lesson_report_whisper_from_upload(
+    audio_path: str,
+    on_progress: Optional[ProgressCallback] = None,
+) -> dict:
+    """17문서 U-1: 클라이언트가 브라우저(FFmpeg.wasm)에서 추출해 업로드한 오디오
+    파일을 입력으로, yt-dlp 다운로드 단계 없이 whisper 검증 파이프라인을 실행.
+
+    유튜브 경로(generate_lesson_report_whisper)와 2)~5) 단계를 완전히 공유하며
+    (_generate_report_from_audio_path), 유일한 차이는 1) 오디오 확보 방식이다.
+    임시 오디오 파일의 수명은 호출 측(라우터 백그라운드 태스크)이 관리한다.
+    """
+    settings = get_settings()
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    audio_path = (audio_path or "").strip()
+    if not audio_path or not os.path.exists(audio_path):
+        raise RuntimeError(f"업로드된 오디오 파일을 찾을 수 없습니다: {audio_path}")
+
+    return _generate_report_from_audio_path(audio_path, on_progress)
+
+
+def _generate_report_from_audio_path(
+    audio_path: str,
+    on_progress: Optional[ProgressCallback] = None,
+) -> dict:
+    """로컬 오디오 파일 경로부터 시작하는 whisper 검증 파이프라인 (2~5단계).
+
+    오디오를 어떻게 확보했는지(yt-dlp 다운로드 / 직접 업로드)와 무관하게
+    STT 전사 → Pass A → 인용 검증 → Pass B를 수행하는 공통 본체.
+    """
+    from app.services import stt_providers, verification
+    from app.services.stt_filters import segments_to_transcript_text, split_segments_into_windows
+
+    settings = get_settings()
+
+    def _notify(step: int, message: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(step, message)
+        except Exception as e:
+            logger.debug("on_progress error ignored: %s", e)
+
+    duration = _get_duration(audio_path)
+    logger.info("[whisper] 오디오 길이: %.0f초", duration)
+
+    # 2) STT 전사 (환청 필터 포함)
+    _notify(2, "🎙️ 음성 인식 중... (2/3) — 시간이 걸릴 수 있습니다")
+    segments, stt_stats = stt_providers.transcribe_audio(
+        audio_path,
+        on_progress=lambda msg: _notify(2, f"🎙️ {msg} (2/3)"),
+    )
+    if not segments:
+        raise RuntimeError("전사 결과가 비어 있습니다 (발화 없음 또는 전부 환청 필터링됨)")
+
+    transcript_text = segments_to_transcript_text(segments)
+    logger.info(
+        "[whisper] 전사 완료: %d 세그먼트 (provider=%s)",
+        len(segments), stt_stats.get("provider"),
+    )
 
     # 3) Pass A — 창 단위 추출
     _notify(3, "📝 오답노트 정리 중... (3/3)")
