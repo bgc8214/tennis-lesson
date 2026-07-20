@@ -9,7 +9,8 @@
  * 구현 코드가 아니라 측정 도구 — 결과를 17문서 4절 표에 기록할 것.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
+import { extractAudioFromVideo, probeVideoDuration } from "@/lib/extractAudio";
 
 type Phase = "idle" | "loading-ffmpeg" | "probing" | "extracting" | "done" | "error";
 
@@ -28,151 +29,45 @@ export default function U0FfmpegTestPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [progressMsg, setProgressMsg] = useState("");
   const [result, setResult] = useState<Result | null>(null);
-  const ffmpegRef = useRef<import("@ffmpeg/ffmpeg").FFmpeg | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
-  const ensureFfmpegLoaded = useCallback(async () => {
-    if (ffmpegRef.current) return ffmpegRef.current;
-    setPhase("loading-ffmpeg");
-    setProgressMsg("FFmpeg.wasm 로딩 중... (첫 실행은 수 MB 다운로드)");
+  const handleFile = useCallback(async (file: File) => {
+    setResult(null);
+    setPhase("probing");
+    setProgressMsg("영상 길이 확인 중...");
 
-    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const { toBlobURL } = await import("@ffmpeg/util");
+    const durationSec = await probeVideoDuration(file);
+    const fileSizeMB = file.size / (1024 * 1024);
 
-    const ffmpeg = new FFmpeg();
-    ffmpeg.on("log", ({ message }) => {
-      setProgressMsg(message);
-    });
+    try {
+      const extracted = await extractAudioFromVideo(file, (p) => {
+        setPhase(p.phase);
+        setProgressMsg(p.message);
+      });
 
-    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-      // Next.js webpack이 @ffmpeg/ffmpeg의 기본 worker.js를 번들링하면서
-      // 상대 경로 import가 깨짐(new URL(classWorkerURL, import.meta.url)이
-      // file://로 잘못 해석됨) — public/에 정적 복사 + 절대 URL로 지정.
-      classWorkerURL: new URL("/ffmpeg/worker.js", window.location.origin).toString(),
-    });
-
-    ffmpegRef.current = ffmpeg;
-    return ffmpeg;
+      setResult({
+        fileName: file.name,
+        fileSizeMB,
+        durationSec,
+        extractMs: extracted.extractMs,
+        outputSizeMB: extracted.outputSizeBytes / (1024 * 1024),
+        copyOk: extracted.copyOk,
+        reencodeUsed: extracted.reencodeUsed,
+      });
+      setPhase("done");
+    } catch (e) {
+      setPhase("error");
+      setResult({
+        fileName: file.name,
+        fileSizeMB,
+        durationSec,
+        extractMs: 0,
+        outputSizeMB: 0,
+        copyOk: false,
+        reencodeUsed: false,
+        errorMessage: e instanceof Error ? e.message : String(e),
+      });
+    }
   }, []);
-
-  const getVideoDuration = useCallback((file: File): Promise<number | null> => {
-    return new Promise((resolve) => {
-      const video = videoRef.current;
-      if (!video) return resolve(null);
-      const url = URL.createObjectURL(file);
-      const timeout = setTimeout(() => {
-        URL.revokeObjectURL(url);
-        resolve(null);
-      }, 5000);
-      video.onloadedmetadata = () => {
-        clearTimeout(timeout);
-        const dur = Number.isFinite(video.duration) ? video.duration : null;
-        URL.revokeObjectURL(url);
-        resolve(dur);
-      };
-      video.onerror = () => {
-        clearTimeout(timeout);
-        URL.revokeObjectURL(url);
-        resolve(null);
-      };
-      video.src = url;
-      video.load();
-    });
-  }, []);
-
-  const handleFile = useCallback(
-    async (file: File) => {
-      setResult(null);
-      setPhase("probing");
-      setProgressMsg("영상 길이 확인 중...");
-
-      const durationSec = await getVideoDuration(file);
-      const fileSizeMB = file.size / (1024 * 1024);
-
-      let ffmpeg: import("@ffmpeg/ffmpeg").FFmpeg;
-      try {
-        ffmpeg = await ensureFfmpegLoaded();
-      } catch (e) {
-        setPhase("error");
-        setResult({
-          fileName: file.name,
-          fileSizeMB,
-          durationSec,
-          extractMs: 0,
-          outputSizeMB: 0,
-          copyOk: false,
-          reencodeUsed: false,
-          errorMessage: `FFmpeg 로딩 실패: ${e instanceof Error ? e.message : String(e)}`,
-        });
-        return;
-      }
-
-      const { FFFSType } = await import("@ffmpeg/ffmpeg");
-      const mountDir = "/input_mount";
-      const outputName = "output.m4a";
-
-      setPhase("extracting");
-      setProgressMsg("오디오 추출 중 (재인코딩 없는 demux)...");
-
-      const t0 = performance.now();
-      try {
-        // fetchFile()+writeFile()은 파일 전체를 메모리(ArrayBuffer)로 복사한다 —
-        // 6GB급 파일에서 FileReader가 실패(U-0 1차 실측으로 확인). WORKERFS
-        // 마운트는 File 객체를 가상 FS에 스트리밍으로 노출해 메모리 복사가 없다.
-        await ffmpeg.createDir(mountDir);
-        await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, mountDir);
-
-        let copyOk = true;
-        let reencodeUsed = false;
-        try {
-          await ffmpeg.exec(["-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "copy", outputName]);
-        } catch {
-          copyOk = false;
-        }
-
-        if (!copyOk) {
-          reencodeUsed = true;
-          setProgressMsg("demux 실패 → aac 재인코딩 폴백 중...");
-          await ffmpeg.exec([
-            "-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "aac", "-b:a", "128k", outputName,
-          ]);
-        }
-
-        const extractMs = performance.now() - t0;
-        const data = await ffmpeg.readFile(outputName);
-        const outputSizeMB = (data as Uint8Array).byteLength / (1024 * 1024);
-
-        await ffmpeg.unmount(mountDir);
-
-        setResult({
-          fileName: file.name,
-          fileSizeMB,
-          durationSec,
-          extractMs,
-          outputSizeMB,
-          copyOk,
-          reencodeUsed,
-        });
-        setPhase("done");
-      } catch (e) {
-        setPhase("error");
-        setResult({
-          fileName: file.name,
-          fileSizeMB,
-          durationSec,
-          extractMs: performance.now() - t0,
-          outputSizeMB: 0,
-          copyOk: false,
-          reencodeUsed: false,
-          errorMessage: e instanceof Error ? e.message : String(e),
-        });
-      }
-    },
-    [ensureFfmpegLoaded, getVideoDuration],
-  );
 
   const busy = phase === "loading-ffmpeg" || phase === "probing" || phase === "extracting";
 
@@ -199,9 +94,6 @@ export default function U0FfmpegTestPage() {
           className="block w-full rounded-xl border border-gray-200 p-3 text-sm disabled:opacity-50"
         />
       </label>
-
-      {/* 메타데이터 프로브용 — 화면에는 안 보임 */}
-      <video ref={videoRef} className="hidden" muted playsInline />
 
       {busy && (
         <div className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm text-brand-700">
