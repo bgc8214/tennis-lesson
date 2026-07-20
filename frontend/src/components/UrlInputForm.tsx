@@ -257,8 +257,10 @@ export function UrlInputForm({ onAnalyzed }: UrlInputFormProps) {
           }
           toast.show(err.message, "error");
         } else {
+          // eslint-disable-next-line no-console -- 폰 원격 디버깅 시 원인 파악용
+          console.error("영상 업로드 처리 실패:", err);
           toast.show(
-            "이 형식은 지원하지 않아요. 다른 영상이나 유튜브 링크를 이용해주세요.",
+            "영상 처리 중 문제가 발생했어요. 다른 영상이나 유튜브 링크를 이용해주세요.",
             "error",
           );
         }
