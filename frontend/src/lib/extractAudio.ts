@@ -82,20 +82,32 @@ export async function extractAudioFromVideo(
   await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, mountDir);
 
   try {
-    let copyOk = true;
+    let copyOk = false;
     let reencodeUsed = false;
+    // ffmpeg.exec()는 예외를 던지지 않고 종료 코드(0=성공, !=0=실패)를 반환한다 —
+    // 코드를 직접 확인해야 실패를 감지할 수 있다(과거 항상 copyOk=true로 오판되어
+    // 폴백이 전혀 실행되지 않고 존재하지 않는 출력 파일 readFile에서 에러가 났었음).
     try {
-      await ffmpeg.exec(["-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "copy", outputName]);
+      const copyExit = await ffmpeg.exec(["-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "copy", outputName]);
+      copyOk = copyExit === 0;
     } catch {
       copyOk = false;
     }
 
     if (!copyOk) {
       reencodeUsed = true;
+      try {
+        await ffmpeg.deleteFile(outputName);
+      } catch {
+        // copy 시도가 부분 파일을 남겼을 수 있으니 재인코딩 전에 정리 (없으면 무시)
+      }
       onProgress?.({ phase: "extracting", message: "demux 실패 → aac 재인코딩 폴백 중..." });
-      await ffmpeg.exec([
+      const reencodeExit = await ffmpeg.exec([
         "-i", `${mountDir}/${file.name}`, "-vn", "-acodec", "aac", "-b:a", "128k", outputName,
       ]);
+      if (reencodeExit !== 0) {
+        throw new Error(`오디오 재인코딩 실패 (exit ${reencodeExit})`);
+      }
     }
 
     const extractMs = performance.now() - t0;
