@@ -1097,6 +1097,83 @@ def retry_lesson(
     return {"data": {"lesson_id": lesson_id, "processing_status": "PENDING"}}
 
 
+@router.post("/{lesson_id}/mark-stuck", status_code=status.HTTP_200_OK)
+def mark_lesson_stuck(
+    lesson_id: str = Path(..., description="레슨 UUID"),
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """분석이 멈춘 레슨을 FAILED로 전환한다.
+
+    Cloud Run은 min-instances=0이라 202 응답 후 백그라운드 분석이 진행되는
+    동안 인스턴스가 회수되면(SIGTERM), 그 레슨은 PROCESSING에 영원히 멈춘다.
+    클라이언트(AnalysisTracker/레슨 상세 폴링)가 updated_at 기준 타임아웃을
+    넘긴 걸 감지하면 이 엔드포인트를 호출해 사용자가 재시도할 수 있게 한다.
+
+    타임아웃 전이거나 이미 DONE/FAILED면 아무것도 하지 않고 현재 상태만 반환
+    (여러 클라이언트가 동시에 호출해도 안전).
+    """
+    settings = get_settings()
+    sb = get_supabase_client()
+
+    try:
+        res = (
+            sb.table("lessons")
+            .select("id, user_id, lesson_reports(processing_status, updated_at)")
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=_err("UPSTREAM_ERROR", "조회 실패", details={"reason": str(e)}))
+
+    if not res.data or res.data[0].get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=_err("LESSON_NOT_FOUND", "해당 레슨을 찾을 수 없습니다."))
+
+    rep = res.data[0].get("lesson_reports")
+    if isinstance(rep, list):
+        rep = rep[0] if rep else {}
+    rep = rep or {}
+    proc_status = rep.get("processing_status") or "PENDING"
+
+    if proc_status not in ("PENDING", "PROCESSING"):
+        return {"data": {"lesson_id": lesson_id, "processing_status": proc_status}}
+
+    updated_at_raw = rep.get("updated_at")
+    if not updated_at_raw:
+        return {"data": {"lesson_id": lesson_id, "processing_status": proc_status}}
+
+    try:
+        updated_at = datetime.fromisoformat(updated_at_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return {"data": {"lesson_id": lesson_id, "processing_status": proc_status}}
+
+    elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    if elapsed < settings.ANALYZE_TIMEOUT_SEC:
+        return {"data": {"lesson_id": lesson_id, "processing_status": proc_status}}
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        sb.table("lesson_reports").update(
+            {
+                "processing_status": "FAILED",
+                "error_message": "분석 서버가 재시작되어 처리가 중단됐어요. 다시 시도해주세요.",
+                "progress_message": None,
+                "updated_at": now,
+                "completed_at": now,
+            }
+        ).eq("lesson_id", lesson_id).execute()
+    except Exception as e:
+        logger.warning("[%s] mark-stuck FAILED 전환 실패: %s", lesson_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_err("UPSTREAM_ERROR", "상태 갱신에 실패했습니다.", details={"reason": str(e)}),
+        )
+
+    return {"data": {"lesson_id": lesson_id, "processing_status": "FAILED"}}
+
+
 @router.delete("/{lesson_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_lesson(
     lesson_id: str = Path(..., description="레슨 UUID"),

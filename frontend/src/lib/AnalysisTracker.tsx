@@ -5,9 +5,12 @@ import {
   useEffect, useRef, useState,
 } from "react";
 import { getSupabaseClient } from "@/lib/supabase";
-import { getLesson } from "@/lib/api";
+import { getLesson, markLessonStuck } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import type { ProcessingStatus } from "@/types/lesson";
+
+// 백엔드 ANALYZE_TIMEOUT_SEC(기본 600초)와 맞춤. lessons/[id] 페이지와 동일 기준.
+const STUCK_TIMEOUT_MS = 600_000;
 
 interface ActiveAnalysis {
   lessonId: string;
@@ -72,6 +75,19 @@ export function AnalysisTrackerProvider({ children }: { children: React.ReactNod
         } else if (detail.processing_status === "FAILED") {
           toast.show(`"${detail.title ?? "레슨"}" 분석에 실패했습니다.`, "error");
           dismiss(lessonId);
+        } else {
+          const elapsedMs = Date.now() - new Date(detail.updated_at).getTime();
+          if (elapsedMs > STUCK_TIMEOUT_MS) {
+            try {
+              const result = await markLessonStuck(lessonId);
+              if (result.processing_status === "FAILED") {
+                toast.show(`"${detail.title ?? "레슨"}" 분석에 실패했습니다.`, "error");
+                dismiss(lessonId);
+              }
+            } catch {
+              // 일시 오류 — 다음 tick에서 재시도
+            }
+          }
         }
       } catch {
         // 일시 오류 무시

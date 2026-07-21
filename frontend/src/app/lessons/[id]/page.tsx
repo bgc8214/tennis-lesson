@@ -6,9 +6,10 @@ import Link from "next/link";
 import { ReportView } from "@/components/ReportView";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useToast } from "@/components/ui/Toast";
-import { deleteLesson, getLesson } from "@/lib/api";
+import { analyzeLessonUpload, deleteLesson, getLesson, markLessonStuck } from "@/lib/api";
 import { getSupabaseClient } from "@/lib/supabase";
 import { ApiCallError, type LessonDetail } from "@/types/lesson";
+import { extractAudioFromVideo, probeVideoDuration, sha256Hex } from "@/lib/extractAudio";
 
 function suggestTitle(lesson: LessonDetail): string {
   const types = lesson.lesson_type?.join(", ") ?? "";
@@ -24,6 +25,10 @@ function suggestTitle(lesson: LessonDetail): string {
 }
 
 const POLL_INTERVAL_MS = 4000;
+// 백엔드 ANALYZE_TIMEOUT_SEC(기본 600초)와 맞춤. Cloud Run이 202 응답 후
+// 백그라운드 분석 중 인스턴스를 회수하면 PROCESSING에 영원히 멈추므로,
+// 이 시간을 넘기면 서버에 FAILED 전환을 요청한다.
+const STUCK_TIMEOUT_MS = 600_000;
 
 export default function LessonDetailPage() {
   const params = useParams<{ id: string }>();
@@ -84,13 +89,26 @@ export default function LessonDetailPage() {
 
     const tick = async () => {
       const detail = await fetchLesson(lessonId);
-      if (cancelled) return;
-      if (
-        detail &&
-        (detail.processing_status === "DONE" ||
-          detail.processing_status === "FAILED")
-      ) {
+      if (cancelled || !detail) return;
+
+      if (detail.processing_status === "DONE" || detail.processing_status === "FAILED") {
         stopPolling();
+        return;
+      }
+
+      if (detail.processing_status === "PENDING" || detail.processing_status === "PROCESSING") {
+        const elapsedMs = Date.now() - new Date(detail.updated_at).getTime();
+        if (elapsedMs > STUCK_TIMEOUT_MS) {
+          try {
+            const result = await markLessonStuck(lessonId);
+            if (result.processing_status === "FAILED" && !cancelled) {
+              await fetchLesson(lessonId);
+              stopPolling();
+            }
+          } catch {
+            // 일시 오류 — 다음 tick에서 재시도
+          }
+        }
       }
     };
 
@@ -318,7 +336,11 @@ export default function LessonDetailPage() {
           message={lesson.report?.progress_message}
         />
       ) : status === "FAILED" ? (
-        <FailedPlaceholder lesson={lesson} onRetrySuccess={() => setPollKey(k => k + 1)} />
+        <FailedPlaceholder
+          lesson={lesson}
+          onRetrySuccess={() => setPollKey((k) => k + 1)}
+          onUploadRetrySuccess={(newLessonId) => router.push(`/lessons/${newLessonId}`)}
+        />
       ) : (
         <ReportView lesson={lesson} startSec={startSec} />
       )}
@@ -389,8 +411,19 @@ function ProcessingPlaceholder({
   );
 }
 
-function FailedPlaceholder({ lesson, onRetrySuccess }: { lesson: LessonDetail; onRetrySuccess?: () => void }) {
+function FailedPlaceholder({
+  lesson,
+  onRetrySuccess,
+  onUploadRetrySuccess,
+}: {
+  lesson: LessonDetail;
+  onRetrySuccess?: () => void;
+  onUploadRetrySuccess?: (newLessonId: string) => void;
+}) {
   const [retrying, setRetrying] = React.useState(false);
+  const [uploadRetryMsg, setUploadRetryMsg] = React.useState("");
+  const toast = useToast();
+  const isUpload = lesson.source_type === "upload";
 
   const message =
     lesson.report?.error_message ??
@@ -413,6 +446,43 @@ function FailedPlaceholder({ lesson, onRetrySuccess }: { lesson: LessonDetail; o
     }
   };
 
+  // 업로드 레슨은 오디오 원본이 서버에 없으므로(무저장 원칙), 파일을 다시 선택해
+  // 재추출·재업로드해야 한다. 성공하면 새 lesson_id가 생겨 그 페이지로 이동.
+  const handleUploadRetryFile = async (file: File) => {
+    setRetrying(true);
+    setUploadRetryMsg("영상 길이 확인 중...");
+    try {
+      const durationSec = await probeVideoDuration(file);
+      const extracted = await extractAudioFromVideo(file, (p) => {
+        setUploadRetryMsg(
+          p.phase === "loading-ffmpeg"
+            ? "오디오 추출 도구 준비 중..."
+            : "영상에서 소리만 추출하는 중...",
+        );
+      });
+      setUploadRetryMsg("분석 서버로 소리만 전송 중...");
+      const fileHash = await sha256Hex(extracted.data);
+      const audioBlob = new Blob([extracted.data.buffer as ArrayBuffer], { type: "audio/mp4" });
+      const res = await analyzeLessonUpload({
+        audio: audioBlob,
+        title: lesson.title ?? file.name.replace(/\.[^/.]+$/, ""),
+        duration_sec: Math.round(durationSec ?? 0),
+        file_hash: fileHash,
+      });
+      onUploadRetrySuccess?.(res.lesson_id);
+    } catch (err) {
+      setRetrying(false);
+      setUploadRetryMsg("");
+      if (err instanceof ApiCallError) {
+        toast.show(err.message, "error");
+      } else {
+        // eslint-disable-next-line no-console -- 원인 파악용
+        console.error("업로드 재시도 실패:", err);
+        toast.show("영상 처리 중 문제가 발생했어요. 다시 시도해주세요.", "error");
+      }
+    }
+  };
+
   return (
     <div className="rounded-3xl border-2 border-red-200 bg-red-50 p-8 text-center sm:p-12">
       <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-red-100 text-red-600">
@@ -432,15 +502,40 @@ function FailedPlaceholder({ lesson, onRetrySuccess }: { lesson: LessonDetail; o
       </div>
       <h2 className="text-lg font-bold text-red-700 sm:text-xl">분석 실패</h2>
       <p className="mx-auto mt-2 max-w-md text-sm text-red-700/80">{message}</p>
+      {retrying && uploadRetryMsg && (
+        <p className="mt-2 text-xs text-red-600" aria-live="polite">{uploadRetryMsg}</p>
+      )}
       <div className="mt-5 flex items-center justify-center gap-3">
-        <button
-          type="button"
-          onClick={handleRetry}
-          disabled={retrying}
-          className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-        >
-          {retrying ? "재시도 중..." : "다시 분석하기"}
-        </button>
+        {isUpload ? (
+          <label
+            className={[
+              "inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold text-white transition",
+              retrying ? "bg-red-300 cursor-not-allowed" : "bg-red-600 hover:bg-red-700",
+            ].join(" ")}
+          >
+            {retrying ? "재시도 중..." : "영상 다시 선택해 재시도"}
+            <input
+              type="file"
+              accept="video/*"
+              disabled={retrying}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleUploadRetryFile(file);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        ) : (
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={retrying}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {retrying ? "재시도 중..." : "다시 분석하기"}
+          </button>
+        )}
         <Link
           href="/"
           className="inline-flex items-center justify-center rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"

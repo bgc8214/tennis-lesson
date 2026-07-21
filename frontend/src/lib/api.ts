@@ -82,6 +82,18 @@ export async function analyzeLesson(
   return res.data;
 }
 
+/** POST /lessons/:id/mark-stuck — Cloud Run 인스턴스 회수로 PROCESSING에
+ * 멈춘 레슨을 서버가 타임아웃 판정해 FAILED로 전환. 타임아웃 전이면 no-op. */
+export async function markLessonStuck(
+  lessonId: string,
+): Promise<{ processing_status: string }> {
+  const res = await fetchWithAuth<ApiSuccessResponse<{ lesson_id: string; processing_status: string }>>(
+    `/api/v1/lessons/${lessonId}/mark-stuck`,
+    { method: "POST" },
+  );
+  return res.data;
+}
+
 /** POST /api/v1/lessons/analyze-upload — 17문서 U-1.
  * multipart/form-data. fetchWithAuth는 JSON 전용이라 여기서 직접 fetch한다
  * (Content-Type을 지정하지 않아 브라우저가 boundary 포함 multipart로 설정하게 둠). */
