@@ -52,12 +52,16 @@ class Settings(BaseSettings):
     # LLM 인용 vs 전사 원문 fuzzy match 통과 임계값 (정규화 텍스트 기준)
     VERIFY_MATCH_THRESHOLD: float = 0.75
 
-    # === Coherence 필터 (STT 오인식 게이트) ===
-    # 인용 검증을 통과했지만(=전사 원문에 존재) STT가 소리를 잘못 알아들어
-    # 한국어로 뜻이 통하지 않는 횡설수설 quote를 Gemini로 한 번 더 걸러낸다.
-    # 검증 게이트는 "Gemini가 지어냈나"만 보고 "STT가 헛들었나"는 못 잡으므로
-    # 그 사각지대를 메우는 후단 필터. 실패 시 fail-open(전부 유지)이라 안전.
-    COHERENCE_FILTER_ENABLED: bool = True
+    # === STT 오인식 대응: 2번(숨기기) vs 3번(정제본 표시) ===
+    # 검증 게이트는 "Gemini가 지어냈나"만 보고 "STT가 헛들었나"는 못 잡으므로,
+    # 검증을 통과한(=전사 원문에 존재) 오인식 quote를 후단에서 처리한다.
+    #
+    # 2번 COHERENCE_FILTER_ENABLED: 뜻이 안 통하는 quote를 아예 드롭(숨기기).
+    # 3번 QUOTE_REFINE_ENABLED: 드롭하지 않고 정제본(quote_display)을 따로
+    #     생성해 원문(quote)과 함께 보존 — 앱이 정제본을 보여주고 원문도 노출.
+    # 둘 다 fail-open(실패 시 원본 유지). 보통 둘 중 하나만 켠다.
+    COHERENCE_FILTER_ENABLED: bool = False
+    QUOTE_REFINE_ENABLED: bool = True
 
     # === STT 전사 품질 (09문서 1-1/1-2) ===
     # STT initial_prompt에 테니스 용어 사전을 주입할지 여부.

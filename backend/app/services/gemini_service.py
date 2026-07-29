@@ -383,6 +383,10 @@ def _coerce_timestamps(value: Any) -> List[Dict[str, Any]]:
         match_score = _coerce_float(item.get("match_score"))
         if match_score is not None:
             coerced["match_score"] = round(_clamp_float(match_score, 0.0, 1.0), 3)
+        # 3번: STT 오인식 정제본 (표시 전용, 원문 quote는 그대로 보존)
+        quote_display = str(item.get("quote_display", "")).strip()
+        if quote_display:
+            coerced["quote_display"] = quote_display
         out.append(coerced)
     return out
 
@@ -1497,6 +1501,117 @@ def filter_incoherent_feedbacks(
     return kept, stats
 
 
+# ─── 3번: Quote 정제본 생성 (원문/표시 분리) ───────────────────────────
+#
+# 2번(coherence 필터)이 오인식 quote를 "드롭"한다면, 3번은 "고쳐서 보여준다".
+# 검증 통과 quote는 그대로 원문(quote)으로 보존하고, Gemini가 STT 오인식을
+# 테니스 코칭 맥락으로 최소 교정한 정제본(quote_display)을 별도 필드로 붙인다.
+# 앱은 정제본을 크게, 원문을 작게 함께 노출한다 — 원문이 항상 남아 있으므로
+# Gemini가 "고친다"며 창작해도 사용자가 원문과 대조할 수 있는 게 안전장치다.
+#
+# 원칙:
+#   - 확실히 알아들을 수 있는 오인식만 최소한으로 교정. 애매하면 원문 그대로.
+#   - 절대 문장을 새로 지어내거나 없는 내용을 추가하지 않는다(오탈자/오인식 수준만).
+#   - fail-open: 실패 시 quote_display=원문(교정 없음).
+QUOTE_REFINE_PROMPT = (
+    '당신은 테니스 레슨 음성인식(STT) 결과를 교정하는 한국어 원어민입니다.\n'
+    '아래는 STT가 받아쓴 "코치 발언" 목록입니다. STT가 소리를 잘못 알아들어 '
+    '단어가 깨진 부분(예: "스툰이"→"스윙이", "한숨 발"→"한 스텝")이 있을 수 있습니다.\n\n'
+    '각 항목을 테니스 코칭 맥락에서 가장 자연스러운 한국어로 최소 교정하세요.\n\n'
+    '===== 발언 목록 =====\n'
+    '{items}\n'
+    '===== 목록 끝 =====\n\n'
+    '절대 규칙:\n'
+    '- 오탈자·오인식 수준만 고칩니다. 문장을 새로 지어내거나 없는 내용을 '
+    '추가/부연하지 마세요. 요약·의역도 금지.\n'
+    '- 무슨 말인지 확실히 복원되는 것만 고치세요. 애매하면 원문을 그대로 두세요.\n'
+    '- 이미 뜻이 통하는 문장은 손대지 말고 그대로 두세요.\n'
+    '- 길이·어투는 원문과 비슷하게 유지하세요.\n\n'
+    '각 번호에 대해 교정된 문장을 아래 JSON으로 출력하세요:\n'
+    '{{"items": [{{"n": 1, "fixed": "교정된 문장"}}]}}\n'
+    '순수 JSON만, 마크다운 펜스 금지.'
+)
+
+
+def refine_feedback_quotes(
+    client: Any,
+    types: Any,
+    model: str,
+    feedbacks: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """검증 통과 피드백에 정제본(quote_display)을 붙인다(원문 quote는 보존).
+
+    Gemini 단일 배치 호출로 각 quote의 STT 오인식을 최소 교정한다. 어떤 항목도
+    드롭하지 않는다. 실패하면 quote_display를 원문과 동일하게 둔다(fail-open).
+
+    Returns:
+        (quote_display가 채워진 피드백 리스트, 통계). 통계 = {"total",
+        "refined"(원문과 달라진 수), "changed_pairs": [(원문, 정제본), ...]}.
+    """
+    # 기본값: 모든 항목의 quote_display = 원문 (교정 실패해도 앱이 항상 쓸 수 있게).
+    result = [dict(fb) for fb in feedbacks]
+    for fb in result:
+        fb["quote_display"] = str(fb.get("quote") or "").strip()
+
+    stats: Dict[str, Any] = {"total": len(result), "refined": 0, "changed_pairs": []}
+
+    judgeable = [
+        (idx, fb) for idx, fb in enumerate(result)
+        if str(fb.get("quote") or "").strip()
+    ]
+    if not judgeable:
+        return result, stats
+
+    lines = []
+    number_to_index: Dict[int, int] = {}
+    for number, (orig_idx, fb) in enumerate(judgeable, start=1):
+        number_to_index[number] = orig_idx
+        lines.append(f'{number}. "{str(fb.get("quote")).strip()}"')
+    prompt = QUOTE_REFINE_PROMPT.format(items="\n".join(lines))
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=2048,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        parsed = _parse_json(response.text or "")
+    except Exception as e:
+        logger.warning("[refine] 정제 실패 — 원문 유지(fail-open): %s", e)
+        return result, stats
+
+    items = parsed.get("items")
+    if not isinstance(items, list):
+        logger.warning("[refine] 응답에 items 리스트 없음 — 원문 유지: %r", parsed)
+        return result, stats
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            orig_idx = number_to_index.get(int(item.get("n")))
+        except (TypeError, ValueError):
+            continue
+        if orig_idx is None:
+            continue
+        fixed = str(item.get("fixed") or "").strip()
+        if not fixed:
+            continue
+        original = str(result[orig_idx].get("quote") or "").strip()
+        result[orig_idx]["quote_display"] = fixed
+        if fixed != original:
+            stats["refined"] += 1
+            stats["changed_pairs"].append((original, fixed))
+
+    if stats["refined"]:
+        logger.info("[refine] STT 오인식 %d개 정제: %s", stats["refined"], stats["changed_pairs"])
+    return result, stats
+
+
 def generate_lesson_report_whisper(
     youtube_url: str,
     on_progress: Optional[ProgressCallback] = None,
@@ -1649,6 +1764,18 @@ def _generate_report_from_audio_path(
         if not verified_feedbacks:
             raise RuntimeError("Coherence 필터 후 남은 피드백이 없습니다")
 
+    # 4-2) 3번: 정제본 생성 — 드롭하지 않고 quote_display를 붙인다(원문 보존).
+    # 앱이 정제본을 보여주고 원문도 함께 노출한다. Pass B는 계속 원문 quote를
+    # 근거로 쓰므로(카드 evidence 검증은 원문 대조) 여기 정제는 표시 전용이다.
+    refine_stats: Dict[str, Any] = {"total": len(verified_feedbacks), "refined": 0, "changed_pairs": []}
+    if settings.QUOTE_REFINE_ENABLED:
+        _notify(3, "✍️ STT 오인식 정제 중... (3/3)")
+        logger.info("[whisper] Quote 정제 실행 중... (%d개)", len(verified_feedbacks))
+        verified_feedbacks, refine_stats = refine_feedback_quotes(
+            client, types, settings.GEMINI_MODEL, verified_feedbacks
+        )
+        logger.info("[whisper] Quote 정제 통계: refined=%d/%d", refine_stats.get("refined", 0), refine_stats.get("total", 0))
+
     # 5) Pass B — 검증된 피드백만 보고 카드 종합 (별도 검증 불필요)
     category_counts: Dict[str, int] = {}
     for fb in verified_feedbacks:
@@ -1707,9 +1834,11 @@ def _generate_report_from_audio_path(
         "timestamps_dropped": verify_stats.get("timestamps_dropped", 0),
         "cards_dropped": card_verify_stats.get("cards_dropped", []),
         "pass_a_windows": len(windows),
-        # STT 오인식 후단 필터 결과 (검증 통과분 중 뜻이 안 통해 추가 제거된 수)
+        # 2번 STT 오인식 후단 필터 결과 (검증 통과분 중 뜻이 안 통해 추가 제거된 수)
         "coherence_dropped": coherence_stats.get("dropped", 0),
         "coherence_dropped_quotes": coherence_stats.get("dropped_quotes", []),
+        # 3번 정제본 생성 결과 (원문과 달라진 quote 수)
+        "quote_refined": refine_stats.get("refined", 0),
     }
 
     # 창별 keywords를 등장 빈도순으로 중복 제거 — 여러 창에서 같은 단어가
