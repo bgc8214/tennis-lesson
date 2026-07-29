@@ -21,6 +21,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.config import get_settings
@@ -307,30 +308,67 @@ def _groq_transcribe_file(
     language: str,
     initial_prompt: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """단일 파일을 Groq transcription API(verbose_json)로 전사."""
+    """단일 파일을 Groq transcription API(verbose_json)로 전사.
+
+    Groq는 특히 large-v3에서 간헐적 5xx(500/502/503/504)를 반환한다(부하성 일시
+    오류 — 동일 오디오도 재시도하면 대개 성공). 재시도 없이 raise하면 청크 하나의
+    일시 오류가 레슨 전체 분석을 실패시키므로, 5xx와 네트워크/타임아웃 오류는
+    지수 백오프(1→2→4초)로 최대 4회 재시도한다. 4xx(잘못된 요청 등)는 재시도해도
+    소용없으니 즉시 raise. 실패 시 Groq 응답 본문을 로그로 남겨 원인 추적을 돕는다.
+    """
     import httpx
 
-    with open(file_path, "rb") as f:
-        files = {"file": (os.path.basename(file_path), f, "audio/mpeg")}
-        data = {
-            "model": model,
-            "language": language,
-            "response_format": "verbose_json",
-            "temperature": "0",
-        }
-        if initial_prompt:
-            data["prompt"] = initial_prompt
-        resp = httpx.post(
-            GROQ_TRANSCRIPTION_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            files=files,
-            data=data,
-            timeout=httpx.Timeout(300.0, connect=30.0),
-        )
-    resp.raise_for_status()
-    payload = resp.json()
-    segments = payload.get("segments") or []
-    return segments if isinstance(segments, list) else []
+    attempts = 4
+    last_error: Optional[Exception] = None
+    for attempt in range(attempts):
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (os.path.basename(file_path), f, "audio/mpeg")}
+                data = {
+                    "model": model,
+                    "language": language,
+                    "response_format": "verbose_json",
+                    "temperature": "0",
+                }
+                if initial_prompt:
+                    data["prompt"] = initial_prompt
+                resp = httpx.post(
+                    GROQ_TRANSCRIPTION_URL,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    files=files,
+                    data=data,
+                    timeout=httpx.Timeout(300.0, connect=30.0),
+                )
+        except httpx.RequestError as e:
+            # 연결/타임아웃 등 전송 오류 — 재시도 대상.
+            last_error = e
+            logger.warning("[stt:groq] 네트워크 오류 (시도 %d/%d): %s", attempt + 1, attempts, e)
+            if attempt < attempts - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise
+
+        if resp.status_code >= 500:
+            body = (resp.text or "")[:300]
+            last_error = RuntimeError(f"Groq {resp.status_code}: {body}")
+            logger.warning(
+                "[stt:groq] 서버 오류 %d (시도 %d/%d, model=%s): %s",
+                resp.status_code, attempt + 1, attempts, model, body,
+            )
+            if attempt < attempts - 1:
+                time.sleep(2 ** attempt)
+                continue
+            resp.raise_for_status()  # 마지막 시도까지 실패 → 예외
+
+        resp.raise_for_status()  # 4xx 등은 즉시 raise(재시도 무의미)
+        payload = resp.json()
+        segments = payload.get("segments") or []
+        return segments if isinstance(segments, list) else []
+
+    # 이론상 도달 불가(위 루프에서 return 또는 raise). 방어적 처리.
+    if last_error is not None:
+        raise last_error
+    return []
 
 
 def _transcribe_groq(
