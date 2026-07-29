@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.config import get_settings
 from app.services.yt_dlp_helpers import build_youtube_ydl_opts
@@ -1372,6 +1372,131 @@ def _run_pass_a_for_window(
         return {"feedbacks": [], "keywords": []}
 
 
+# ─── Coherence 필터 (STT 오인식 게이트) ────────────────────────────────
+#
+# 인용 검증(verification.verify_report)은 quote가 전사 원문에 실제로 존재하는지만
+# 본다 — 즉 "Gemini가 지어냈나"를 막는 게이트다. 그런데 Groq/Whisper가 소리를
+# 자신 있게 잘못 알아들으면("스윙이"→"스툰이") 그 오인식 텍스트가 전사에 그대로
+# 박히므로, quote는 자기 자신과 매칭돼 검증을 통과해 버린다(garbage in →
+# verified garbage out). 이 필터는 검증을 통과한 quote를 한국어 원어민 관점에서
+# 다시 읽어 "테니스 코치 발언으로 뜻이 통하는가"를 판정하고, 명백한 횡설수설만
+# 제거한다. 판정은 Gemini 단일 호출(배치)로 저렴하게 처리한다.
+#
+# 설계 원칙:
+#   - 보수적으로: 조금이라도 말이 되면 남긴다(진짜 피드백 손실 방지). 애매 → 유지.
+#   - fail-open: 호출 실패/파싱 실패 시 전부 유지한다. 필터 오류가 리포트를
+#     비우는 사고를 막기 위해 항상 keep 쪽으로 폴백.
+COHERENCE_FILTER_PROMPT = (
+    '당신은 테니스 레슨 음성인식(STT) 결과를 검수하는 한국어 원어민입니다.\n'
+    '아래는 STT가 받아쓴 "코치 발언" 목록입니다. STT가 소리를 잘못 알아들어 '
+    '한국어로 뜻이 통하지 않는 횡설수설(예: "스툰이 안된다고", "한숨 발 좀 뽑아야")이 '
+    '섞여 있을 수 있습니다.\n\n'
+    '각 항목이 "테니스 코치가 수강생에게 실제로 할 법한, 뜻이 통하는 한국어 발언"인지 '
+    '판단하세요.\n\n'
+    '===== 발언 목록 =====\n'
+    '{items}\n'
+    '===== 목록 끝 =====\n\n'
+    '규칙:\n'
+    '- 문장이 어색하거나 구어체·비문이어도, 테니스 레슨 맥락에서 뜻이 통하면 남깁니다.\n'
+    '- 단어가 깨졌거나("스툰", "한숨 발") 문장이 앞뒤 없이 완전히 엉뚱해서 '
+    '무슨 말인지 알 수 없는 것만 제거 대상입니다.\n'
+    '- 조금이라도 말이 되면 남기세요. 애매하면 남깁니다(제거하지 마세요).\n\n'
+    '제거해야 할 항목의 번호만 아래 JSON으로 출력하세요:\n'
+    '{{"drop": [번호, ...]}}\n'
+    '제거할 것이 없으면 {{"drop": []}}. 순수 JSON만, 마크다운 펜스 금지.'
+)
+
+
+def filter_incoherent_feedbacks(
+    client: Any,
+    types: Any,
+    model: str,
+    feedbacks: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """검증을 통과한 피드백 중 STT 오인식으로 뜻이 통하지 않는 quote를 제거한다.
+
+    Gemini 단일 배치 호출로 각 quote의 한국어 coherence를 판정하고, 명백한
+    횡설수설만 드롭한다. 어떤 이유로든 판정에 실패하면 전부 유지한다(fail-open).
+
+    Returns:
+        (남긴 피드백 리스트, 통계 dict). 통계 = {"total", "kept", "dropped",
+        "dropped_quotes"}.
+    """
+    stats: Dict[str, Any] = {
+        "total": len(feedbacks),
+        "kept": len(feedbacks),
+        "dropped": 0,
+        "dropped_quotes": [],
+    }
+    if not feedbacks:
+        return feedbacks, stats
+
+    # 판정 대상은 quote가 있는 항목만 — quote 없는 항목은 그대로 유지.
+    judgeable = [
+        (idx, fb) for idx, fb in enumerate(feedbacks)
+        if str(fb.get("quote") or "").strip()
+    ]
+    if not judgeable:
+        return feedbacks, stats
+
+    # 1-based 번호로 목록화 (LLM이 1부터 세는 게 자연스럽고 0 혼동이 적다).
+    lines = []
+    number_to_index: Dict[int, int] = {}
+    for number, (orig_idx, fb) in enumerate(judgeable, start=1):
+        number_to_index[number] = orig_idx
+        lines.append(f'{number}. "{str(fb.get("quote")).strip()}"')
+    prompt = COHERENCE_FILTER_PROMPT.format(items="\n".join(lines))
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=1024,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        parsed = _parse_json(response.text or "")
+    except Exception as e:
+        logger.warning("[coherence] 판정 실패 — 전부 유지(fail-open): %s", e)
+        return feedbacks, stats
+
+    raw_drop = parsed.get("drop")
+    if not isinstance(raw_drop, list):
+        logger.warning("[coherence] 응답에 drop 리스트 없음 — 전부 유지: %r", parsed)
+        return feedbacks, stats
+
+    drop_indices = set()
+    for n in raw_drop:
+        try:
+            orig_idx = number_to_index.get(int(n))
+        except (TypeError, ValueError):
+            continue
+        if orig_idx is not None:
+            drop_indices.add(orig_idx)
+
+    # 안전장치: 모델이 과하게 전부(또는 거의 전부) 드롭하면 오판 위험이 크므로
+    # 무시하고 전부 유지한다(진짜 피드백을 통째로 날리는 사고 방지).
+    if drop_indices and len(drop_indices) >= len(judgeable):
+        logger.warning(
+            "[coherence] 판정 대상 %d개 중 %d개를 드롭하려 함 — 과도 판정으로 보고 무시(전부 유지)",
+            len(judgeable), len(drop_indices),
+        )
+        return feedbacks, stats
+
+    kept = [fb for idx, fb in enumerate(feedbacks) if idx not in drop_indices]
+    dropped_quotes = [
+        str(feedbacks[idx].get("quote") or "").strip() for idx in sorted(drop_indices)
+    ]
+    stats["kept"] = len(kept)
+    stats["dropped"] = len(drop_indices)
+    stats["dropped_quotes"] = dropped_quotes
+    if dropped_quotes:
+        logger.info("[coherence] STT 오인식 %d개 제거: %s", len(dropped_quotes), dropped_quotes)
+    return kept, stats
+
+
 def generate_lesson_report_whisper(
     youtube_url: str,
     on_progress: Optional[ProgressCallback] = None,
@@ -1509,6 +1634,21 @@ def _generate_report_from_audio_path(
     if not verified_feedbacks:
         raise RuntimeError("검증을 통과한 피드백이 없습니다 (전사에 실제 코치 발언이 없거나 추출 실패)")
 
+    # 4-1) Coherence 필터 — 검증은 통과했지만 STT가 소리를 잘못 알아들어 뜻이
+    # 통하지 않는 quote를 제거한다. 여기서 걸러야 Pass B가 그 오인식을 카드
+    # 근거로 쓰지 않고, 타임라인에도 남지 않는다. fail-open이라 실패해도
+    # verified_feedbacks가 그대로 유지된다.
+    coherence_stats: Dict[str, Any] = {"total": len(verified_feedbacks), "kept": len(verified_feedbacks), "dropped": 0, "dropped_quotes": []}
+    if settings.COHERENCE_FILTER_ENABLED:
+        _notify(3, "🧹 STT 오인식 정리 중... (3/3)")
+        logger.info("[whisper] Coherence 필터 실행 중... (%d개 검증 통과 피드백)", len(verified_feedbacks))
+        verified_feedbacks, coherence_stats = filter_incoherent_feedbacks(
+            client, types, settings.GEMINI_MODEL, verified_feedbacks
+        )
+        logger.info("[whisper] Coherence 필터 통계: %s", coherence_stats)
+        if not verified_feedbacks:
+            raise RuntimeError("Coherence 필터 후 남은 피드백이 없습니다")
+
     # 5) Pass B — 검증된 피드백만 보고 카드 종합 (별도 검증 불필요)
     category_counts: Dict[str, int] = {}
     for fb in verified_feedbacks:
@@ -1567,6 +1707,9 @@ def _generate_report_from_audio_path(
         "timestamps_dropped": verify_stats.get("timestamps_dropped", 0),
         "cards_dropped": card_verify_stats.get("cards_dropped", []),
         "pass_a_windows": len(windows),
+        # STT 오인식 후단 필터 결과 (검증 통과분 중 뜻이 안 통해 추가 제거된 수)
+        "coherence_dropped": coherence_stats.get("dropped", 0),
+        "coherence_dropped_quotes": coherence_stats.get("dropped_quotes", []),
     }
 
     # 창별 keywords를 등장 빈도순으로 중복 제거 — 여러 창에서 같은 단어가
